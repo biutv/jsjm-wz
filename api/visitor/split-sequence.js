@@ -1,43 +1,43 @@
-import * as t from '@babel/types'
+const t = require('@babel/types');
 
 function doSplit(insertPath, path) {
-  const expressions = path.node.expressions
-  const lastExpression = expressions.pop()
+  const expressions = path.node.expressions;
+  const lastExpression = expressions.pop();
   while (expressions.length) {
-    insertPath.insertBefore(t.expressionStatement(expressions.shift()))
+    insertPath.insertBefore(t.expressionStatement(expressions.shift()));
   }
-  path.replaceWith(lastExpression)
-  insertPath.scope.crawl()
+  path.replaceWith(lastExpression);
+  insertPath.scope.crawl();
 }
 
 function splitSequence(path) {
-  let { parentPath } = path
+  let { parentPath } = path;
   if (parentPath.isVariableDeclarator()) {
     // Skip if it's not the first VariableDeclarator
     if (parentPath.key !== 0) {
-      return
+      return;
     }
-    let insertPath = parentPath.parentPath
+    let insertPath = parentPath.parentPath;
     // Skip if the container of the VariableDeclaration is not an array
     if (!insertPath.listKey) {
-      return
+      return;
     }
-    doSplit(insertPath, path)
-    return
+    doSplit(insertPath, path);
+    return;
   }
   if (parentPath.isReturnStatement()) {
     if (!parentPath.listKey) {
-      return
+      return;
     }
-    doSplit(parentPath, path)
-    return
+    doSplit(parentPath, path);
+    return;
   }
   if (parentPath.isExpressionStatement()) {
     if (!parentPath.listKey) {
-      return
+      return;
     }
-    doSplit(parentPath, path)
-    return
+    doSplit(parentPath, path);
+    return;
   }
 }
 
@@ -48,6 +48,6 @@ function splitSequence(path) {
  * - ReturnStatement
  * - ExpressionStatement
  */
-export default {
+module.exports = {
   SequenceExpression: splitSequence,
-}
+};
