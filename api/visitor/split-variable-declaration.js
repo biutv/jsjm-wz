@@ -1,24 +1,24 @@
-import * as t from '@babel/types'
+const t = require('@babel/types');
 
 function splitVariableDeclaration(path) {
   // The scope of a for statement is its body
   if (path.parentPath.isFor()) {
-    return
+    return;
   }
   // The container must be an array
   if (!path.listKey) {
-    return
+    return;
   }
-  const kind = path.node.kind
-  const list = path.node.declarations
+  const kind = path.node.kind;
+  const list = path.node.declarations;
   if (list.length == 1) {
-    return
+    return;
   }
   for (let item of list) {
-    path.insertBefore(t.variableDeclaration(kind, [item]))
+    path.insertBefore(t.variableDeclaration(kind, [item]));
   }
-  path.remove()
-  path.scope.crawl()
+  path.remove();
+  path.scope.crawl();
 }
 
 /**
@@ -26,6 +26,6 @@ function splitVariableDeclaration(path) {
  *
  * This operation will only be performed when its container is an array
  */
-export default {
+module.exports = {
   VariableDeclaration: splitVariableDeclaration,
-}
+};
