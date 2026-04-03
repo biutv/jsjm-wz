@@ -1,103 +1,54 @@
-import express from 'express';
-import serverless from 'serverless-http';
-import bodyParser from 'body-parser';
+const { parse } = require('@babel/parser');
+const _generate = require('@babel/generator');
+const generator = _generate.default;
+const _traverse = require('@babel/traverse');
+const traverse = _traverse.default;
+const t = require('@babel/types');
 
-const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+function unpack(code) {
+  let ast = parse(code, { errorRecovery: true });
+  let lines = ast.program.body;
+  let data = null;
+  for (let line of lines) {
+    if (t.isEmptyStatement(line)) {
+      continue;
+    }
+    if (data) {
+      return null;
+    }
+    if (
+      t.isCallExpression(line?.expression) &&
+      line.expression.callee?.name === 'eval' &&
+      line.expression.arguments.length === 1 &&
+      t.isCallExpression(line.expression.arguments[0])
+    ) {
+      data = t.expressionStatement(line.expression.arguments[0]);
+      continue;
+    }
+    return null;
+  }
+  if (!data) {
+    return null;
+  }
+  code = generator(data, { minified: true }).code;
+  return eval(code);
+}
 
-// 测试路由
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    project: 'jsjm-wz',
-    message: '部署成功'
+function pack(code) {
+  let ast1 = parse('(function(){}())');
+  let ast2 = parse(code);
+  traverse(ast1, {
+    FunctionExpression(path) {
+      let body = t.blockStatement(ast2.program.body);
+      path.replaceWith(t.functionExpression(null, [], body));
+      path.stop();
+    },
   });
-});
+  code = generator(ast1, { minified: false }).code;
+  return code;
+}
 
-// 加载所有插件
-import sojson from './plugin/sojson.js';
-import obfuscator from './plugin/obfuscator.js';
-import jjencode from './plugin/jjencode.js';
-import awsc from './plugin/awsc.js';
-import common from './plugin/common.js';
-import sojsonv7 from './plugin/sojsonv7.js';
-import evalTool from './plugin/eval.js';
-import tool1 from './plugin/1.js';
-
-// 解码接口
-app.post('/decode/sojson', async (req, res) => {
-  try {
-    const result = sojson(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/obfuscator', async (req, res) => {
-  try {
-    const result = obfuscator(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/jjencode', async (req, res) => {
-  try {
-    const result = jjencode(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/awsc', async (req, res) => {
-  try {
-    const result = awsc(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/common', async (req, res) => {
-  try {
-    const result = common(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/sojsonv7', async (req, res) =>
-{
-  try {
-    const result = sojsonv7(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/eval', async (req, res) => {
-  try {
-    const result = evalTool.unpack(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-app.post('/decode/1', async (req, res) => {
-  try {
-    const result = tool1(req.body.code);
-    res.send(result);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-// ✅✅✅ 这一行是 Vercel 强制要求的格式！！！
-export default serverless(app);
+module.exports = {
+  unpack,
+  pack,
+};
