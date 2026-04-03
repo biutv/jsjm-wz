@@ -1,60 +1,454 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const serverless = require('serverless-http');
-const PluginCommon = require('../src/plugin/common.js');
-const PluginJjencode = require('../src/plugin/jjencode.js');
-const PluginSojson = require('../src/plugin/sojson.js');
-const PluginSojsonV7 = require('../src/plugin/sojsonv7.js');
-const PluginObfuscator = require('../src/plugin/obfuscator.js');
-const PluginAwsc = require('../src/plugin/awsc.js');
+/**
+ * 在 babel_asttool.js 的基础上修改而来
+ */
+import { parse } from '@babel/parser'
+import _generate from '@babel/generator'
+const generator = _generate.default
+import _traverse from '@babel/traverse'
+const traverse = _traverse.default
+import * as t from '@babel/types'
+// 已移除：不兼容 Vercel 的 isolated-vm
+import PluginEval from './eval.js'
+import calculateConstantExp from '../visitor/calculate-constant-exp.js'
+import deleteUnusedVar from '../visitor/delete-unused-var.js'
+import parseControlFlowStorage from '../visitor/parse-control-flow-storage.js'
+import pruneIfBranch from '../visitor/prune-if-branch.js'
+import removeControlFlowOb from '../visitor/remove-control-flow-ob.js'
+import splitSequence from '../visitor/split-sequence.js'
 
-const app = express();
-const decodeRouter = express.Router();
-
-app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
-app.use(bodyParser.json({ limit: '10mb' }));
-
-decodeRouter.post('/v7', (req, res) => processDecodeRequest(req, res, PluginSojsonV7));
-decodeRouter.post('/sojson', (req, res) => processDecodeRequest(req, res, PluginSojson));
-decodeRouter.post('/common', (req, res) => processDecodeRequest(req, res, PluginCommon));
-decodeRouter.post('/jj', (req, res) => processDecodeRequest(req, res, PluginJjencode));
-decodeRouter.post('/Obfuscator', (req, res) => processDecodeRequest(req, res, PluginObfuscator));
-decodeRouter.post('/awsc', (req, res) => processDecodeRequest(req, res, PluginAwsc));
-
-function processDecodeRequest(req, res, Plugin) {
+// ================ 核心修复：纯 JS 沙箱替代 isolated-vm ================
+const globalContext = {
+  __sandbox: {},
+  evalSync(jsStr) {
     try {
-        const contentType = req.headers['content-type'];
-        let sourceCode;
-        if (contentType?.startsWith('application/json') || 
-            contentType?.startsWith('application/x-www-form-urlencoded')) {
-            sourceCode = req.body.code;
-        } else {
-            throw new Error("参数错误");
-        }
-        console.log('request come', sourceCode.substring(0, 100) + '...');
-        const decodedCode = Plugin(sourceCode);
-        if (!decodedCode) {
-            throw new Error("解码失败");
-        }
-        res.status(200).json({ code: 1, msg: "success", data: decodedCode });
+      // 纯 JS 安全执行环境，兼容 Vercel
+      return new Function('"use strict";return (' + jsStr + ')')();
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ code: 0, msg: e.message });
+      try {
+        return new Function('"use strict";' + jsStr)();
+      } catch (err) {
+        console.warn('虚拟执行警告:', err.message);
+        return '';
+      }
     }
+  }
+};
+
+function virtualGlobalEval(jsStr) {
+  return globalContext.evalSync(String(jsStr));
+}
+// ======================================================================
+
+function decodeGlobal(ast) {
+  // 清理空语句
+  let i = 0
+  while (i < ast.program.body.length) {
+    if (t.isEmptyStatement(ast.program.body[i])) {
+      ast.program.body.splice(i, 1)
+    } else {
+      ++i
+    }
+  }
+  // 前3句非空语句分别为签名信息、预处理函数、解密函数。
+  if (i < 3) {
+    console.log('Error: code too short')
+    return false
+  }
+  // 分离解密语句与内容语句
+  let decrypt_code = ast.program.body.slice(0, 3)
+  if (!t.isVariableDeclaration(decrypt_code[0])) {
+    console.log('Error: line 1 is not variable declaration')
+    return false
+  }
+  let decrypt_fun = decrypt_code[2]
+  if (t.isExpressionStatement(decrypt_fun)) {
+    decrypt_fun = decrypt_code[1]
+  }
+  let decrypt_val
+  if (t.isVariableDeclaration(decrypt_fun)) {
+    decrypt_val = decrypt_fun.declarations[0].id.name
+  } else if (t.isFunctionDeclaration(decrypt_fun)) {
+    decrypt_val = decrypt_fun.id.name
+  } else {
+    console.log('Error: cannot find decrypt variable')
+    return false
+  }
+  console.log(`主加密变量: ${decrypt_val}`)
+  let content_code = ast.program.body.slice(3)
+  // 运行解密语句
+  ast.program.body = decrypt_code
+  let { code } = generator(ast, {
+    compact: true,
+  })
+  virtualGlobalEval(code)
+  // 遍历内容语句
+  function funToStr(path) {
+    let node = path.node
+    if (!t.isIdentifier(node.callee, { name: decrypt_val })) {
+      return
+    }
+    let tmp = path.toString()
+    let value = virtualGlobalEval(tmp)
+    path.replaceWith(t.valueToNode(value))
+  }
+  function memToStr(path) {
+    let node = path.node
+    if (!t.isIdentifier(node.object, { name: decrypt_val })) {
+      return
+    }
+    let tmp = path.toString()
+    let value = virtualGlobalEval(tmp)
+    path.replaceWith(t.valueToNode(value))
+  }
+  ast.program.body = content_code
+  traverse(ast, {
+    CallExpression: funToStr,
+    MemberExpression: memToStr,
+  })
+  return ast
 }
 
-app.use('/decode', decodeRouter);
+function cleanDeadCode(ast) {
+  traverse(ast, calculateConstantExp)
+  traverse(ast, pruneIfBranch)
+  traverse(ast, removeControlFlowOb)
+  return ast
+}
 
-app.get('/', (req, res) => {
-    res.json({
-        status: 'ok',
-        service: 'js-decoder',
-        endpoints: ['/decode/common', '/decode/jj', '/decode/sojson', '/decode/v7', '/decode/Obfuscator', '/decode/awsc']
-    });
-});
+function checkPattern(code, pattern) {
+  let i = 0
+  let j = 0
+  while (i < code.length && j < pattern.length) {
+    if (code[i] == pattern[j]) {
+      ++j
+    }
+    ++i
+  }
+  return j == pattern.length
+}
 
-app.use((req, res) => {
-    res.status(404).json({ code: 0, msg: "Not Found" });
-});
+/**
+ * Two RegExp tests will be conducted here:
+ * * If '\n' exists (code formatted)
+ * * If '\u' or '\x' does not exist (literal formatted)
+ *
+ * An infinite call stack will appear if either of the test fails.
+ * (by replacing the 'e' with '\u0435')
+ */
+const deleteSelfDefendingCode = {
+  VariableDeclarator(path) {
+    const { id, init } = path.node
+    const selfName = id.name
+    if (!t.isCallExpression(init)) {
+      return
+    }
+    if (!t.isIdentifier(init.callee)) {
+      return
+    }
+    const callName = init.callee.name
+    const args = init.arguments
+    if (
+      args.length != 2 ||
+      !t.isThisExpression(args[0]) ||
+      !t.isFunctionExpression(args[1])
+    ) {
+      return
+    }
+    const block = generator(args[1]).code
+    const pattern = `RegExp()return.test(.toString())RegExp()return.test(.toString())\u0435\u0435`
+    if (!checkPattern(block, pattern)) {
+      return
+    }
+    const refs = path.scope.bindings[selfName].referencePaths
+    for (let ref of refs) {
+      if (ref.key == 'callee') {
+        ref.parentPath.remove()
+        break
+      }
+    }
+    path.remove()
+    console.info(`Remove SelfDefendingFunc: ${selfName}`)
+    const scope = path.scope.getBinding(callName).scope
+    scope.crawl()
+    const bind = scope.bindings[callName]
+    if (bind.referenced) {
+      console.error(`Call func ${callName} unexpected ref!`)
+    }
+    bind.path.remove()
+    console.info(`Remove CallFunc: ${callName}`)
+  },
+}
 
-module.exports.handler = serverless(app);
+/**
+ * A "debugger" will be inserted by:
+ * * v5: directly.
+ * * v6: calling Function constructor twice.
+ */
+const deleteDebugProtectionCode = {
+  FunctionDeclaration(path) {
+    const { id, params, body } = path.node
+    if (
+      !t.isIdentifier(id) ||
+      params.length !== 1 ||
+      !t.isIdentifier(params[0]) ||
+      !t.isBlockStatement(body) ||
+      body.body.length !== 2 ||
+      !t.isFunctionDeclaration(body.body[0]) ||
+      !t.isTryStatement(body.body[1])
+    ) {
+      return
+    }
+    const debugName = id.name
+    const ret = params[0].name
+    const subNode = body.body[0]
+    if (
+      !t.isIdentifier(subNode.id) ||
+      subNode.params.length !== 1 ||
+      !t.isIdentifier(subNode.params[0])
+    ) {
+      return
+    }
+    const subName = subNode.id.name
+    const counter = subNode.params[0].name
+    const code = generator(body).code
+    const pattern = `function${subName}(${counter}){${counter}debug${subName}(++${counter})}try{if(${ret})return${subName}${subName}(0)}catch(){}`
+    if (!checkPattern(code, pattern)) {
+      return
+    }
+    const scope1 = path.parentPath.scope
+    const refs = scope1.bindings[debugName].referencePaths
+    for (let ref of refs) {
+      if (ref.findParent((path) => path.removed)) {
+        continue
+      }
+      let parent = ref.getFunctionParent()
+      if (parent.key == 0) {
+        const rm = parent.parentPath
+        rm.remove()
+        continue
+      }
+      const callName = parent.parent.callee.name
+      const up2 = parent.getFunctionParent().parentPath
+      const scope2 = up2.scope.getBinding(callName).scope
+      up2.remove()
+      scope1.crawl()
+      scope2.crawl()
+      const bind = scope2.bindings[callName]
+      bind.path.remove()
+      console.info(`Remove CallFunc: ${callName}`)
+    }
+    path.remove()
+    console.info(`Remove DebugProtectionFunc: ${debugName}`)
+  },
+}
+
+const deleteConsoleOutputCode = {
+  VariableDeclarator(path) {
+    const { id, init } = path.node
+    const selfName = id.name
+    if (!t.isCallExpression(init)) {
+      return
+    }
+    if (!t.isIdentifier(init.callee)) {
+      return
+    }
+    const callName = init.callee.name
+    const args = init.arguments
+    if (
+      args.length != 2 ||
+      !t.isThisExpression(args[0]) ||
+      !t.isFunctionExpression(args[1])
+    ) {
+      return
+    }
+    const body = args[1].body.body
+    if (body.length !== 3) {
+      return
+    }
+    if (
+      !t.isVariableDeclaration(body[0]) ||
+      !t.isVariableDeclaration(body[1]) ||
+      !t.isIfStatement(body[2])
+    ) {
+      return
+    }
+    const feature = [
+      [],
+      ['window', 'process', 'require', 'global'],
+      [
+        'console',
+        'log',
+        'warn',
+        'debug',
+        'info',
+        'error',
+        'exception',
+        'trace',
+      ],
+    ]
+    let valid = true
+    for (let i = 1; i < 3; ++i) {
+      const { code } = generator(body[i])
+      feature[i].map((key) => {
+        if (code.indexOf(key) == -1) {
+          valid = false
+        }
+      })
+    }
+    if (!valid) {
+      return
+    }
+    const refs = path.scope.bindings[selfName].referencePaths
+    for (let ref of refs) {
+      if (ref.key == 'callee') {
+        ref.parentPath.remove()
+        break
+      }
+    }
+    path.remove()
+    console.info(`Remove ConsoleOutputFunc: ${selfName}`)
+    const scope = path.scope.getBinding(callName).scope
+    scope.crawl()
+    const bind = scope.bindings[callName]
+    if (bind.referenced) {
+      console.error(`Call func ${callName} unexpected ref!`)
+    }
+    bind.path.remove()
+    console.info(`Remove CallFunc: ${callName}`)
+  },
+}
+
+const deleteVersionCheck = {
+  StringLiteral(path) {
+    const msg = '删除版本号，js会定期弹窗，还请支持我们的工作'
+    if (path.node.value !== msg) {
+      return
+    }
+    let fnPath = path.getFunctionParent().parentPath
+    if (!fnPath.isCallExpression()) {
+      return
+    }
+    fnPath.remove()
+    console.log('Remove VersionCheck')
+  },
+}
+
+function unlockEnv(ast) {
+  traverse(ast, deleteSelfDefendingCode)
+  traverse(ast, deleteDebugProtectionCode)
+  traverse(ast, deleteConsoleOutputCode)
+  traverse(ast, deleteVersionCheck)
+  return ast
+}
+
+function purifyFunction(path) {
+  const node = path.node
+  if (!t.isIdentifier(node.left) || !t.isFunctionExpression(node.right)) {
+    return
+  }
+  const name = node.left.name
+  if (node.right.body.body.length !== 1) {
+    return
+  }
+  let retStmt = node.right.body.body[0]
+  if (!t.isReturnStatement(retStmt)) {
+    return
+  }
+  if (!t.isBinaryExpression(retStmt.argument, { operator: '+' })) {
+    return
+  }
+  try {
+    const fnPath = path.getFunctionParent() || path.scope.path
+    fnPath.traverse({
+      CallExpression: function (_path) {
+        const _node = _path.node.callee
+        if (!t.isIdentifier(_node, { name: name })) {
+          return
+        }
+        let args = _path.node.arguments
+        _path.replaceWith(t.binaryExpression('+', args[0], args[1]))
+      },
+    })
+    path.remove()
+    console.log(`拼接类函数: ${name}`)
+  } catch {
+    let code = generator(path.node, { minified: true }).code
+    console.warn('Purify function failed: ' + code)
+  }
+}
+
+function purifyCode(ast) {
+  traverse(ast, { AssignmentExpression: purifyFunction })
+  traverse(ast, calculateConstantExp)
+  function FormatMember(path) {
+    let curNode = path.node
+    if (!t.isStringLiteral(curNode.property)) {
+      return
+    }
+    if (curNode.computed === undefined || !curNode.computed === true) {
+      return
+    }
+    if (!/^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(curNode.property.value)) {
+      return
+    }
+    curNode.property = t.identifier(curNode.property.value)
+    curNode.computed = false
+  }
+  traverse(ast, { MemberExpression: FormatMember })
+  traverse(ast, splitSequence)
+  traverse(ast, {
+    EmptyStatement: (path) => {
+      path.remove()
+    },
+  })
+  traverse(ast, deleteUnusedVar)
+  return ast
+}
+
+export default function (code) {
+  let ret = PluginEval.unpack(code)
+  let global_eval = false
+  if (ret) {
+    global_eval = true
+    code = ret
+  }
+  let ast = parse(code)
+  traverse(ast, {
+    StringLiteral: ({ node }) => {
+      delete node.extra
+    },
+  })
+  traverse(ast, {
+    NumericLiteral: ({ node }) => {
+      delete node.extra
+    },
+  })
+  console.log('处理全局加密...')
+  ast = decodeGlobal(ast)
+  if (!ast) {
+    return null
+  }
+  console.log('处理代码块加密...')
+  traverse(ast, parseControlFlowStorage)
+  console.log('清理死代码...')
+  ast = cleanDeadCode(ast)
+  ast = parse(
+    generator(ast, {
+      comments: false,
+      jsescOption: { minimal: true },
+    }).code,
+  )
+  console.log('提高代码可读性...')
+  ast = purifyCode(ast)
+  console.log('解除环境限制...')
+  ast = unlockEnv(ast)
+  console.log('净化完成')
+  code = generator(ast, {
+    comments: false,
+    jsescOption: { minimal: true },
+  }).code
+  if (global_eval) {
+    code = PluginEval.pack(code)
+  }
+  return code
+}
