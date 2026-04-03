@@ -1,4 +1,4 @@
-import * as t from '@babel/types'
+const t = require('@babel/types');
 
 /**
  * DFS the BlockStatement to find and return the location of the first
@@ -7,17 +7,17 @@ import * as t from '@babel/types'
 const checkReturnLocation = (body) => {
   for (let i = 0; i < body.length; ++i) {
     if (t.isReturnStatement(body[i])) {
-      return i
+      return i;
     }
     if (t.isBlockStatement(body[i])) {
-      const ret = checkReturnLocation(body[i].body)
+      const ret = checkReturnLocation(body[i].body);
       if (~ret) {
-        return i
+        return i;
       }
     }
   }
-  return -1
-}
+  return -1;
+};
 
 /**
  * Remove the codes after the first ReturnStatement, which is not inside a
@@ -26,25 +26,25 @@ const checkReturnLocation = (body) => {
  * This is slightly different from the @putout/plugin-remove-unreachable-code :
  * https://github.com/coderaiser/putout/issues/224#issuecomment-2614051528
  */
-export default {
+module.exports = {
   BlockStatement: (path) => {
-    const body = path.node.body
-    const loc = checkReturnLocation(body)
+    const body = path.node.body;
+    const loc = checkReturnLocation(body);
     if (loc == -1) {
-      return
+      return;
     }
     for (let i = body.length - 1; i > loc; --i) {
       if (t.isFunctionDeclaration(body[i])) {
-        continue
+        continue;
       }
-      body.splice(i, 1)
+      body.splice(i, 1);
     }
     if (loc === 0 && t.isBlockStatement(body[0])) {
-      const inner = body.shift()
+      const inner = body.shift();
       while (inner.body.length) {
-        body.unshift(inner.body.pop())
+        body.unshift(inner.body.pop());
       }
     }
-    path.scope.crawl()
+    path.scope.crawl();
   },
-}
+};
