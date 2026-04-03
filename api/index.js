@@ -1,76 +1,103 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const serverless = require('serverless-http');
-
-// 导入插件（确保路径正确）
-const PluginCommon = require('./plugin/common.js');
-const PluginJjencode = require('./plugin/jjencode.js');
-const PluginSojson = require('./plugin/sojson.js');
-const PluginSojsonV7 = require('./plugin/sojsonv7.js');
-const PluginObfuscator = require('./plugin/obfuscator.js');
-const PluginAwsc = require('./plugin/awsc.js');
+import express from 'express';
+import serverless from 'serverless-http';
+import bodyParser from 'body-parser';
 
 const app = express();
-const decodeRouter = express.Router();
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
-app.use(bodyParser.json({ limit: '10mb' }));
-
-// 路由
-decodeRouter.post('/v7', (req, res) => processDecodeRequest(req, res, PluginSojsonV7));
-decodeRouter.post('/sojson', (req, res) => processDecodeRequest(req, res, PluginSojson));
-decodeRouter.post('/common', (req, res) => processDecodeRequest(req, res, PluginCommon));
-decodeRouter.post('/jj', (req, res) => processDecodeRequest(req, res, PluginJjencode));
-decodeRouter.post('/Obfuscator', (req, res) => processDecodeRequest(req, res, PluginObfuscator));
-decodeRouter.post('/awsc', (req, res) => processDecodeRequest(req, res, PluginAwsc));
-
-function processDecodeRequest(req, res, Plugin) {
-    try {
-        const contentType = req.headers['content-type'];
-        let sourceCode;
-
-        if (contentType?.startsWith('application/json') || 
-            contentType?.startsWith('application/x-www-form-urlencoded')) {
-            sourceCode = req.body.code;
-        } else {
-            throw new Error("参数错误");
-        }
-
-        console.log('request come', sourceCode.substring(0, 100) + '...');
-        const decodedCode = Plugin(sourceCode);
-        
-        if (!decodedCode) {
-            throw new Error("解码失败");
-        }
-        
-        res.status(200).json({
-            code: 1,
-            msg: "success",
-            data: decodedCode
-        });
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({
-            code: 0,
-            msg: e.message
-        });
-    }
-}
-
-app.use('/decode', decodeRouter);
-
-// 健康检查
+// 测试路由
 app.get('/', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        service: 'js-decoder',
-        endpoints: ['/decode/common', '/decode/jj', '/decode/sojson', '/decode/v7', '/decode/Obfuscator', '/decode/awsc']
-    });
+  res.json({
+    status: 'ok',
+    project: 'jsjm-wz',
+    message: '部署成功'
+  });
 });
 
-app.use((req, res) => {
-    res.status(404).json({ code: 0, msg: "Not Found" });
+// 加载所有插件
+import sojson from './plugin/sojson.js';
+import obfuscator from './plugin/obfuscator.js';
+import jjencode from './plugin/jjencode.js';
+import awsc from './plugin/awsc.js';
+import common from './plugin/common.js';
+import sojsonv7 from './plugin/sojsonv7.js';
+import evalTool from './plugin/eval.js';
+import tool1 from './plugin/1.js';
+
+// 解码接口
+app.post('/decode/sojson', async (req, res) => {
+  try {
+    const result = sojson(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
 });
 
-// 关键：导出 handler（必须使用 module.exports.handler）
-module.exports.handler = serverless(app);
+app.post('/decode/obfuscator', async (req, res) => {
+  try {
+    const result = obfuscator(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/jjencode', async (req, res) => {
+  try {
+    const result = jjencode(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/awsc', async (req, res) => {
+  try {
+    const result = awsc(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/common', async (req, res) => {
+  try {
+    const result = common(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/sojsonv7', async (req, res) =>
+{
+  try {
+    const result = sojsonv7(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/eval', async (req, res) => {
+  try {
+    const result = evalTool.unpack(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+app.post('/decode/1', async (req, res) => {
+  try {
+    const result = tool1(req.body.code);
+    res.send(result);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
+});
+
+// ✅✅✅ 这一行是 Vercel 强制要求的格式！！！
+export default serverless(app);
