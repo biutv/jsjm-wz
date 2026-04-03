@@ -1,115 +1,117 @@
 /**
  * 在 babel_asttool.js 的基础上修改而来
+ * 移除 isolated-vm，改用内置 vm 模块
  */
-import { parse } from '@babel/parser'
-import _generate from '@babel/generator'
-const generator = _generate.default
-import _traverse from '@babel/traverse'
-const traverse = _traverse.default
-import * as t from '@babel/types'
-import ivm from 'isolated-vm'
-import PluginEval from './eval.js'
-import calculateConstantExp from '../visitor/calculate-constant-exp.js'
-import deleteUnusedVar from '../visitor/delete-unused-var.js'
-import parseControlFlowStorage from '../visitor/parse-control-flow-storage.js'
-import pruneIfBranch from '../visitor/prune-if-branch.js'
-import removeControlFlowOb from '../visitor/remove-control-flow-ob.js'
-import splitSequence from '../visitor/split-sequence.js'
+const { parse } = require('@babel/parser');
+const _generate = require('@babel/generator');
+const generator = _generate.default;
+const _traverse = require('@babel/traverse');
+const traverse = _traverse.default;
+const t = require('@babel/types');
+const vm = require('vm');
+const PluginEval = require('./eval.js');
+const calculateConstantExp = require('../visitor/calculate-constant-exp.js');
+const deleteUnusedVar = require('../visitor/delete-unused-var.js');
+const parseControlFlowStorage = require('../visitor/parse-control-flow-storage.js');
+const pruneIfBranch = require('../visitor/prune-if-branch.js');
+const removeControlFlowOb = require('../visitor/remove-control-flow-ob.js');
+const splitSequence = require('../visitor/split-sequence.js');
 
-const isolate = new ivm.Isolate()
-const globalContext = isolate.createContextSync()
+// 创建虚拟全局上下文（类似 isolated-vm 的 Context）
+const sandbox = { console, setTimeout, setInterval, clearTimeout, clearInterval };
+vm.createContext(sandbox);
+
 function virtualGlobalEval(jsStr) {
-  return globalContext.evalSync(String(jsStr))
+  // 使用 vm.runInContext 执行代码并返回结果
+  return vm.runInContext(jsStr, sandbox);
 }
 
 function decodeGlobal(ast) {
   // 清理空语句
-  let i = 0
+  let i = 0;
   while (i < ast.program.body.length) {
     if (t.isEmptyStatement(ast.program.body[i])) {
-      ast.program.body.splice(i, 1)
+      ast.program.body.splice(i, 1);
     } else {
-      ++i
+      ++i;
     }
   }
   // 前3句非空语句分别为签名信息、预处理函数、解密函数。
   if (i < 3) {
-    console.log('Error: code too short')
-    return false
+    console.log('Error: code too short');
+    return false;
   }
   // 分离解密语句与内容语句
-  let decrypt_code = ast.program.body.slice(0, 3)
+  let decrypt_code = ast.program.body.slice(0, 3);
   if (!t.isVariableDeclaration(decrypt_code[0])) {
-    console.log('Error: line 1 is not variable declaration')
-    return false
+    console.log('Error: line 1 is not variable declaration');
+    return false;
   }
-  let decrypt_fun = decrypt_code[2]
+  let decrypt_fun = decrypt_code[2];
   if (t.isExpressionStatement(decrypt_fun)) {
-    decrypt_fun = decrypt_code[1]
+    decrypt_fun = decrypt_code[1];
   }
-  let decrypt_val
+  let decrypt_val;
   if (t.isVariableDeclaration(decrypt_fun)) {
-    decrypt_val = decrypt_fun.declarations[0].id.name
+    decrypt_val = decrypt_fun.declarations[0].id.name;
   } else if (t.isFunctionDeclaration(decrypt_fun)) {
-    decrypt_val = decrypt_fun.id.name
+    decrypt_val = decrypt_fun.id.name;
   } else {
-    console.log('Error: cannot find decrypt variable')
-    return false
+    console.log('Error: cannot find decrypt variable');
+    return false;
   }
-  console.log(`主加密变量: ${decrypt_val}`)
-  let content_code = ast.program.body.slice(3)
+  console.log(`主加密变量: ${decrypt_val}`);
+  let content_code = ast.program.body.slice(3);
   // 运行解密语句
-  ast.program.body = decrypt_code
+  ast.program.body = decrypt_code;
   let { code } = generator(ast, {
     compact: true,
-  })
-  virtualGlobalEval(code)
+  });
+  virtualGlobalEval(code);
   // 遍历内容语句
   function funToStr(path) {
-    let node = path.node
+    let node = path.node;
     if (!t.isIdentifier(node.callee, { name: decrypt_val })) {
-      return
+      return;
     }
-    let tmp = path.toString()
-    let value = virtualGlobalEval(tmp)
-    // console.log(`还原前：${tmp} 还原后：${value}`)
-    path.replaceWith(t.valueToNode(value))
+    let tmp = path.toString();
+    let value = virtualGlobalEval(tmp);
+    path.replaceWith(t.valueToNode(value));
   }
   function memToStr(path) {
-    let node = path.node
+    let node = path.node;
     if (!t.isIdentifier(node.object, { name: decrypt_val })) {
-      return
+      return;
     }
-    let tmp = path.toString()
-    let value = virtualGlobalEval(tmp)
-    // console.log(`还原前：${tmp} 还原后：${value}`)
-    path.replaceWith(t.valueToNode(value))
+    let tmp = path.toString();
+    let value = virtualGlobalEval(tmp);
+    path.replaceWith(t.valueToNode(value));
   }
-  ast.program.body = content_code
+  ast.program.body = content_code;
   traverse(ast, {
     CallExpression: funToStr,
     MemberExpression: memToStr,
-  })
-  return ast
+  });
+  return ast;
 }
 
 function cleanDeadCode(ast) {
-  traverse(ast, calculateConstantExp)
-  traverse(ast, pruneIfBranch)
-  traverse(ast, removeControlFlowOb)
-  return ast
+  traverse(ast, calculateConstantExp);
+  traverse(ast, pruneIfBranch);
+  traverse(ast, removeControlFlowOb);
+  return ast;
 }
 
 function checkPattern(code, pattern) {
-  let i = 0
-  let j = 0
+  let i = 0;
+  let j = 0;
   while (i < code.length && j < pattern.length) {
     if (code[i] == pattern[j]) {
-      ++j
+      ++j;
     }
-    ++i
+    ++i;
   }
-  return j == pattern.length
+  return j == pattern.length;
 }
 
 /**
@@ -122,47 +124,47 @@ function checkPattern(code, pattern) {
  */
 const deleteSelfDefendingCode = {
   VariableDeclarator(path) {
-    const { id, init } = path.node
-    const selfName = id.name
+    const { id, init } = path.node;
+    const selfName = id.name;
     if (!t.isCallExpression(init)) {
-      return
+      return;
     }
     if (!t.isIdentifier(init.callee)) {
-      return
+      return;
     }
-    const callName = init.callee.name
-    const args = init.arguments
+    const callName = init.callee.name;
+    const args = init.arguments;
     if (
       args.length != 2 ||
       !t.isThisExpression(args[0]) ||
       !t.isFunctionExpression(args[1])
     ) {
-      return
+      return;
     }
-    const block = generator(args[1]).code
-    const pattern = `RegExp()return.test(.toString())RegExp()return.test(.toString())\u0435\u0435`
+    const block = generator(args[1]).code;
+    const pattern = `RegExp()return.test(.toString())RegExp()return.test(.toString())\u0435\u0435`;
     if (!checkPattern(block, pattern)) {
-      return
+      return;
     }
-    const refs = path.scope.bindings[selfName].referencePaths
+    const refs = path.scope.bindings[selfName].referencePaths;
     for (let ref of refs) {
       if (ref.key == 'callee') {
-        ref.parentPath.remove()
-        break
+        ref.parentPath.remove();
+        break;
       }
     }
-    path.remove()
-    console.info(`Remove SelfDefendingFunc: ${selfName}`)
-    const scope = path.scope.getBinding(callName).scope
-    scope.crawl()
-    const bind = scope.bindings[callName]
+    path.remove();
+    console.info(`Remove SelfDefendingFunc: ${selfName}`);
+    const scope = path.scope.getBinding(callName).scope;
+    scope.crawl();
+    const bind = scope.bindings[callName];
     if (bind.referenced) {
-      console.error(`Call func ${callName} unexpected ref!`)
+      console.error(`Call func ${callName} unexpected ref!`);
     }
-    bind.path.remove()
-    console.info(`Remove CallFunc: ${callName}`)
+    bind.path.remove();
+    console.info(`Remove CallFunc: ${callName}`);
   },
-}
+};
 
 /**
  * A "debugger" will be inserted by:
@@ -171,7 +173,7 @@ const deleteSelfDefendingCode = {
  */
 const deleteDebugProtectionCode = {
   FunctionDeclaration(path) {
-    const { id, params, body } = path.node
+    const { id, params, body } = path.node;
     if (
       !t.isIdentifier(id) ||
       params.length !== 1 ||
@@ -181,84 +183,84 @@ const deleteDebugProtectionCode = {
       !t.isFunctionDeclaration(body.body[0]) ||
       !t.isTryStatement(body.body[1])
     ) {
-      return
+      return;
     }
-    const debugName = id.name
-    const ret = params[0].name
-    const subNode = body.body[0]
+    const debugName = id.name;
+    const ret = params[0].name;
+    const subNode = body.body[0];
     if (
       !t.isIdentifier(subNode.id) ||
       subNode.params.length !== 1 ||
       !t.isIdentifier(subNode.params[0])
     ) {
-      return
+      return;
     }
-    const subName = subNode.id.name
-    const counter = subNode.params[0].name
-    const code = generator(body).code
-    const pattern = `function${subName}(${counter}){${counter}debug${subName}(++${counter})}try{if(${ret})return${subName}${subName}(0)}catch(){}`
+    const subName = subNode.id.name;
+    const counter = subNode.params[0].name;
+    const code = generator(body).code;
+    const pattern = `function${subName}(${counter}){${counter}debug${subName}(++${counter})}try{if(${ret})return${subName}${subName}(0)}catch(){}`;
     if (!checkPattern(code, pattern)) {
-      return
+      return;
     }
-    const scope1 = path.parentPath.scope
-    const refs = scope1.bindings[debugName].referencePaths
+    const scope1 = path.parentPath.scope;
+    const refs = scope1.bindings[debugName].referencePaths;
     for (let ref of refs) {
       if (ref.findParent((path) => path.removed)) {
-        continue
+        continue;
       }
-      let parent = ref.getFunctionParent()
+      let parent = ref.getFunctionParent();
       if (parent.key == 0) {
         // DebugProtectionFunctionInterval
         // window.setInterval(Function(), ...)
-        const rm = parent.parentPath
-        rm.remove()
-        continue
+        const rm = parent.parentPath;
+        rm.remove();
+        continue;
       }
       // DebugProtectionFunctionCall
-      const callName = parent.parent.callee.name
-      const up2 = parent.getFunctionParent().parentPath
-      const scope2 = up2.scope.getBinding(callName).scope
-      up2.remove()
-      scope1.crawl()
-      scope2.crawl()
-      const bind = scope2.bindings[callName]
-      bind.path.remove()
-      console.info(`Remove CallFunc: ${callName}`)
+      const callName = parent.parent.callee.name;
+      const up2 = parent.getFunctionParent().parentPath;
+      const scope2 = up2.scope.getBinding(callName).scope;
+      up2.remove();
+      scope1.crawl();
+      scope2.crawl();
+      const bind = scope2.bindings[callName];
+      bind.path.remove();
+      console.info(`Remove CallFunc: ${callName}`);
     }
-    path.remove()
-    console.info(`Remove DebugProtectionFunc: ${debugName}`)
+    path.remove();
+    console.info(`Remove DebugProtectionFunc: ${debugName}`);
   },
-}
+};
 
 const deleteConsoleOutputCode = {
   VariableDeclarator(path) {
-    const { id, init } = path.node
-    const selfName = id.name
+    const { id, init } = path.node;
+    const selfName = id.name;
     if (!t.isCallExpression(init)) {
-      return
+      return;
     }
     if (!t.isIdentifier(init.callee)) {
-      return
+      return;
     }
-    const callName = init.callee.name
-    const args = init.arguments
+    const callName = init.callee.name;
+    const args = init.arguments;
     if (
       args.length != 2 ||
       !t.isThisExpression(args[0]) ||
       !t.isFunctionExpression(args[1])
     ) {
-      return
+      return;
     }
-    const body = args[1].body.body
+    const body = args[1].body.body;
     if (body.length !== 3) {
-      return
+      return;
     }
     if (
       !t.isVariableDeclaration(body[0]) ||
       !t.isVariableDeclaration(body[1]) ||
       !t.isIfStatement(body[2])
     ) {
-      return
+      return;
     }
     const feature = [
       [],
@@ -273,188 +275,184 @@ const deleteConsoleOutputCode = {
         'exception',
         'trace',
       ],
-    ]
-    let valid = true
+    ];
+    let valid = true;
     for (let i = 1; i < 3; ++i) {
-      const { code } = generator(body[i])
+      const { code } = generator(body[i]);
       feature[i].map((key) => {
         if (code.indexOf(key) == -1) {
-          valid = false
+          valid = false;
         }
-      })
+      });
     }
     if (!valid) {
-      return
+      return;
     }
-    const refs = path.scope.bindings[selfName].referencePaths
+    const refs = path.scope.bindings[selfName].referencePaths;
     for (let ref of refs) {
       if (ref.key == 'callee') {
-        ref.parentPath.remove()
-        break
+        ref.parentPath.remove();
+        break;
       }
     }
-    path.remove()
-    console.info(`Remove ConsoleOutputFunc: ${selfName}`)
-    const scope = path.scope.getBinding(callName).scope
-    scope.crawl()
-    const bind = scope.bindings[callName]
+    path.remove();
+    console.info(`Remove ConsoleOutputFunc: ${selfName}`);
+    const scope = path.scope.getBinding(callName).scope;
+    scope.crawl();
+    const bind = scope.bindings[callName];
     if (bind.referenced) {
-      console.error(`Call func ${callName} unexpected ref!`)
+      console.error(`Call func ${callName} unexpected ref!`);
     }
-    bind.path.remove()
-    console.info(`Remove CallFunc: ${callName}`)
+    bind.path.remove();
+    console.info(`Remove CallFunc: ${callName}`);
   },
-}
+};
 
 const deleteVersionCheck = {
   StringLiteral(path) {
-    const msg = '删除版本号，js会定期弹窗，还请支持我们的工作'
+    const msg = '删除版本号，js会定期弹窗，还请支持我们的工作';
     if (path.node.value !== msg) {
-      return
+      return;
     }
-    let fnPath = path.getFunctionParent().parentPath
+    let fnPath = path.getFunctionParent().parentPath;
     if (!fnPath.isCallExpression()) {
-      return
+      return;
     }
-    fnPath.remove()
-    console.log('Remove VersionCheck')
+    fnPath.remove();
+    console.log('Remove VersionCheck');
   },
-}
+};
 
 function unlockEnv(ast) {
   // 查找并删除`自卫模式`函数
-  traverse(ast, deleteSelfDefendingCode)
+  traverse(ast, deleteSelfDefendingCode);
   // 查找并删除`禁止控制台调试`函数
-  traverse(ast, deleteDebugProtectionCode)
+  traverse(ast, deleteDebugProtectionCode);
   // 清空`禁止控制台输出`函数
-  traverse(ast, deleteConsoleOutputCode)
+  traverse(ast, deleteConsoleOutputCode);
   // 删除版本号检测
-  traverse(ast, deleteVersionCheck)
-  return ast
+  traverse(ast, deleteVersionCheck);
+  return ast;
 }
 
 function purifyFunction(path) {
-  const node = path.node
+  const node = path.node;
   if (!t.isIdentifier(node.left) || !t.isFunctionExpression(node.right)) {
-    return
+    return;
   }
-  const name = node.left.name
+  const name = node.left.name;
   if (node.right.body.body.length !== 1) {
-    return
+    return;
   }
-  let retStmt = node.right.body.body[0]
+  let retStmt = node.right.body.body[0];
   if (!t.isReturnStatement(retStmt)) {
-    return
+    return;
   }
   if (!t.isBinaryExpression(retStmt.argument, { operator: '+' })) {
-    return
+    return;
   }
   try {
-    const fnPath = path.getFunctionParent() || path.scope.path
+    const fnPath = path.getFunctionParent() || path.scope.path;
     fnPath.traverse({
       CallExpression: function (_path) {
-        const _node = _path.node.callee
+        const _node = _path.node.callee;
         if (!t.isIdentifier(_node, { name: name })) {
-          return
+          return;
         }
-        let args = _path.node.arguments
-        _path.replaceWith(t.binaryExpression('+', args[0], args[1]))
+        let args = _path.node.arguments;
+        _path.replaceWith(t.binaryExpression('+', args[0], args[1]));
       },
-    })
-    path.remove()
-    console.log(`拼接类函数: ${name}`)
+    });
+    path.remove();
+    console.log(`拼接类函数: ${name}`);
   } catch {
-    let code = generator(path.node, { minified: true }).code
-    console.warn('Purify function failed: ' + code)
+    let code = generator(path.node, { minified: true }).code;
+    console.warn('Purify function failed: ' + code);
   }
 }
 
 function purifyCode(ast) {
   // 净化拼接字符串的函数
-  traverse(ast, { AssignmentExpression: purifyFunction })
+  traverse(ast, { AssignmentExpression: purifyFunction });
   // 计算常量表达式
-  traverse(ast, calculateConstantExp)
+  traverse(ast, calculateConstantExp);
   // 替换索引器
   function FormatMember(path) {
-    // _0x19882c['removeCookie']['toString']()
-    //  |
-    //  |
-    //  |
-    //  v
-    // _0x19882c.removeCookie.toString()
-    let curNode = path.node
+    let curNode = path.node;
     if (!t.isStringLiteral(curNode.property)) {
-      return
+      return;
     }
     if (curNode.computed === undefined || !curNode.computed === true) {
-      return
+      return;
     }
     if (!/^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(curNode.property.value)) {
-      return
+      return;
     }
-    curNode.property = t.identifier(curNode.property.value)
-    curNode.computed = false
+    curNode.property = t.identifier(curNode.property.value);
+    curNode.computed = false;
   }
-  traverse(ast, { MemberExpression: FormatMember })
+  traverse(ast, { MemberExpression: FormatMember });
   // 分割表达式
-  traverse(ast, splitSequence)
+  traverse(ast, splitSequence);
   // 删除空语句
   traverse(ast, {
     EmptyStatement: (path) => {
-      path.remove()
+      path.remove();
     },
-  })
+  });
   // 删除未使用的变量
-  traverse(ast, deleteUnusedVar)
-  return ast
+  traverse(ast, deleteUnusedVar);
+  return ast;
 }
 
-export default function (code) {
-  let ret = PluginEval.unpack(code)
-  let global_eval = false
+function decodeSojson(code) {
+  let ret = PluginEval.unpack(code);
+  let global_eval = false;
   if (ret) {
-    global_eval = true
-    code = ret
+    global_eval = true;
+    code = ret;
   }
-  let ast = parse(code)
+  let ast = parse(code);
   // 清理二进制显示内容
   traverse(ast, {
     StringLiteral: ({ node }) => {
-      delete node.extra
+      delete node.extra;
     },
-  })
+  });
   traverse(ast, {
     NumericLiteral: ({ node }) => {
-      delete node.extra
+      delete node.extra;
     },
-  })
-  console.log('处理全局加密...')
-  ast = decodeGlobal(ast)
+  });
+  console.log('处理全局加密...');
+  ast = decodeGlobal(ast);
   if (!ast) {
-    return null
+    return null;
   }
-  console.log('处理代码块加密...')
-  traverse(ast, parseControlFlowStorage)
-  console.log('清理死代码...')
-  ast = cleanDeadCode(ast)
+  console.log('处理代码块加密...');
+  traverse(ast, parseControlFlowStorage);
+  console.log('清理死代码...');
+  ast = cleanDeadCode(ast);
   // 刷新代码
   ast = parse(
     generator(ast, {
       comments: false,
       jsescOption: { minimal: true },
     }).code,
-  )
-  console.log('提高代码可读性...')
-  ast = purifyCode(ast)
-  console.log('解除环境限制...')
-  ast = unlockEnv(ast)
-  console.log('净化完成')
-  code = generator(ast, {
+  );
+  console.log('提高代码可读性...');
+  ast = purifyCode(ast);
+  console.log('解除环境限制...');
+  ast = unlockEnv(ast);
+  console.log('净化完成');
+  let decoded = generator(ast, {
     comments: false,
     jsescOption: { minimal: true },
-  }).code
+  }).code;
   if (global_eval) {
-    code = PluginEval.pack(code)
+    decoded = PluginEval.pack(decoded);
   }
-  return code
+  return decoded;
 }
+
+module.exports = decodeSojson;
