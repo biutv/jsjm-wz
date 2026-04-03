@@ -1,24 +1,24 @@
-import _generate from '@babel/generator'
-const generator = _generate.default
-import * as t from '@babel/types'
+const _generate = require('@babel/generator');
+const generator = _generate.default;
+const t = require('@babel/types');
 
 function checkLiteral(node) {
   if (t.isNumericLiteral(node)) {
-    return 'positive'
+    return 'positive';
   }
   if (t.isLiteral(node)) {
-    return 'literal'
+    return 'literal';
   }
   if (!t.isUnaryExpression(node)) {
-    return false
+    return false;
   }
   if (!t.isNumericLiteral(node.argument)) {
-    return false
+    return false;
   }
   if (node.operator === '-') {
-    return 'negative'
+    return 'negative';
   }
-  return false
+  return false;
 }
 
 /**
@@ -27,19 +27,19 @@ function checkLiteral(node) {
  * Note that negative numbers are UnaryExpressions.
  */
 function calculateBinaryExpression(path) {
-  const { left, right } = path.node
+  const { left, right } = path.node;
   if (!checkLiteral(left) || !checkLiteral(right)) {
-    return
+    return;
   }
-  const code = generator(path.node).code
+  const code = generator(path.node).code;
   try {
-    const ret = eval(code)
+    const ret = eval(code);
     // The strings cannot use replaceWithSourceString
     // For example, string "ab" will be parsed as identifier ab
     if (typeof ret === 'string') {
-      path.replaceWith(t.stringLiteral(ret))
+      path.replaceWith(t.stringLiteral(ret));
     } else {
-      path.replaceWithSourceString(ret)
+      path.replaceWithSourceString(ret);
     }
   } catch {
     //
@@ -58,51 +58,51 @@ function calculateBinaryExpression(path) {
  * For example, `typeof window` can be calculated but it's not constant.
  */
 function calculateUnaryExpression(path) {
-  const node0 = path.node
-  const node1 = node0.argument
-  const isLiteral = checkLiteral(node1)
+  const node0 = path.node;
+  const node1 = node0.argument;
+  const isLiteral = checkLiteral(node1);
   if (node0.operator === '!') {
     if (t.isArrayExpression(node1)) {
       if (node1.elements.length === 0) {
-        path.replaceWith(t.booleanLiteral(false))
+        path.replaceWith(t.booleanLiteral(false));
       }
     }
     if (isLiteral) {
-      const code = generator(node0).code
-      path.replaceWith(t.booleanLiteral(eval(code)))
+      const code = generator(node0).code;
+      path.replaceWith(t.booleanLiteral(eval(code)));
     }
-    return
+    return;
   }
   if (node0.operator === '-') {
     if (isLiteral === 'negative') {
-      const code = generator(node0).code
-      path.replaceWithSourceString(eval(code))
+      const code = generator(node0).code;
+      path.replaceWithSourceString(eval(code));
     }
-    return
+    return;
   }
   if (node0.operator === '+' || node0.operator === '~') {
     if (isLiteral === 'negative' || isLiteral === 'positive') {
-      const code = generator(node0).code
-      path.replaceWithSourceString(eval(code))
+      const code = generator(node0).code;
+      path.replaceWithSourceString(eval(code));
     }
-    return
+    return;
   }
   if (node0.operator === 'void') {
     if (isLiteral) {
-      path.replaceWith(t.identifier('undefined'))
+      path.replaceWith(t.identifier('undefined'));
     }
-    return
+    return;
   }
   if (node0.operator === 'typeof') {
     if (isLiteral) {
-      const code = generator(node0).code
-      path.replaceWith(t.stringLiteral(eval(code)))
+      const code = generator(node0).code;
+      path.replaceWith(t.stringLiteral(eval(code)));
     }
-    return
+    return;
   }
 }
 
-export default {
+module.exports = {
   BinaryExpression: { exit: calculateBinaryExpression },
   UnaryExpression: { exit: calculateUnaryExpression },
-}
+};
