@@ -1,75 +1,75 @@
-import * as t from '@babel/types'
+const t = require('@babel/types');
 
 function mergeObject(path) {
-  const { id, init } = path.node
+  const { id, init } = path.node;
   if (!t.isObjectExpression(init)) {
     // 判断是否是定义对象
-    return
+    return;
   }
-  let name = id.name
-  let scope = path.scope
-  let binding = scope.getBinding(name)
-  const start = path.node.end
-  let end = -1
-  let violation = null
+  let name = id.name;
+  let scope = path.scope;
+  let binding = scope.getBinding(name);
+  const start = path.node.end;
+  let end = -1;
+  let violation = null;
   if (!binding.constant) {
     // Find the first constantViolation after this declaration
     for (let item of binding.constantViolations) {
       if (item.node.start <= start) {
-        continue
+        continue;
       }
       if (item.isVariableDeclarator() || item.isAssignmentExpression()) {
         if (end === -1 || item.node.start < end) {
-          end = item.node.start
-          violation = item
+          end = item.node.start;
+          violation = item;
         }
-        continue
+        continue;
       }
-      return
+      return;
     }
   }
   // 添加已有的key
-  let keys = {}
-  let properties = init.properties
+  let keys = {};
+  let properties = init.properties;
   for (let prop of properties) {
-    let key = null
+    let key = null;
     if (t.isStringLiteral(prop.key)) {
-      key = prop.key.value
+      key = prop.key.value;
     }
     if (t.isIdentifier(prop.key)) {
-      key = prop.key.name
+      key = prop.key.name;
     }
     if (key) {
-      keys[key] = true
+      keys[key] = true;
     }
   }
   // 遍历作用域检测是否含有局部混淆特征并合并成员
-  let merges = []
-  const container = path.parentPath.parentPath
-  let cur = 0
-  let valid = true
+  let merges = [];
+  const container = path.parentPath.parentPath;
+  let cur = 0;
+  let valid = true;
   // Check references in sequence
   while (cur < binding.references) {
-    const ref = binding.referencePaths[cur]
+    const ref = binding.referencePaths[cur];
     // Ignore the references before this declaration
     if (ref.node.start <= start) {
-      ++cur
-      continue
+      ++cur;
+      continue;
     }
     // Ignore the references after the first constantViolation
     if (end >= 0 && ref.node.end >= end) {
-      break
+      break;
     }
     if (ref.key !== 'object' || !ref.parentPath.isMemberExpression()) {
-      break
+      break;
     }
-    const me = ref.parentPath
+    const me = ref.parentPath;
     if (me.key !== 'left' || !me.parentPath.isAssignmentExpression()) {
-      break
+      break;
     }
-    const ae = me.parentPath
-    let bk = ae
-    let stop = false
+    const ae = me.parentPath;
+    let bk = ae;
+    let stop = false;
     while (bk.parentPath !== container) {
       if (
         bk.parentPath.isSequenceExpression() ||
@@ -77,89 +77,89 @@ function mergeObject(path) {
         bk.parentPath.isVariableDeclaration() ||
         bk.parentPath.isExpressionStatement()
       ) {
-        bk = bk.parentPath
-        continue
+        bk = bk.parentPath;
+        continue;
       }
-      stop = true
-      break
+      stop = true;
+      break;
     }
     if (stop) {
-      break
+      break;
     }
-    const property = me.node.property
-    let key = null
+    const property = me.node.property;
+    let key = null;
     if (t.isStringLiteral(property)) {
-      key = property.value
+      key = property.value;
     }
     if (t.isIdentifier(property)) {
-      key = property.name
+      key = property.name;
     }
     if (!key) {
-      valid = false
-      break
+      valid = false;
+      break;
     }
     // 不允许出现重定义
     if (Object.prototype.hasOwnProperty.call(keys, key)) {
-      valid = false
-      break
+      valid = false;
+      break;
     }
     // 添加到列表
-    properties.push(t.ObjectProperty(t.valueToNode(key), ae.node.right))
-    keys[key] = true
-    merges.push(ae)
-    ++cur
+    properties.push(t.ObjectProperty(t.valueToNode(key), ae.node.right));
+    keys[key] = true;
+    merges.push(ae);
+    ++cur;
   }
   if (!merges.length || !valid) {
-    return
+    return;
   }
   // Remove code
-  console.log(`尝试性合并: ${name}`)
+  console.log(`尝试性合并: ${name}`);
   for (let ref of merges) {
-    const left = ref.node.left
+    const left = ref.node.left;
     if (ref.parentPath.isSequenceExpression() && ref.container.length === 1) {
-      ref = ref.parentPath
+      ref = ref.parentPath;
     }
     if (
       ref.parentPath.isVariableDeclarator() ||
       ref.parentPath.isAssignmentExpression()
     ) {
-      ref.replaceWith(left)
+      ref.replaceWith(left);
     } else {
-      ref.remove()
+      ref.remove();
     }
   }
   // Check the remaining references
-  const ref1 = binding.referencePaths[cur++]
+  const ref1 = binding.referencePaths[cur++];
   if (!ref1) {
-    scope.crawl()
-    return
+    scope.crawl();
+    return;
   }
-  const ref2 = binding.referencePaths[cur]
+  const ref2 = binding.referencePaths[cur];
   // Don't replace the declarator if there exists more than one reference
   if (ref2 && ref2.node.end < end) {
-    scope.crawl()
-    return
+    scope.crawl();
+    return;
   }
   // Check if the only reference is an assignment
-  let key = ref1.key
-  let up1 = ref1.parentPath
+  let key = ref1.key;
+  let up1 = ref1.parentPath;
   if (up1.isSequenceExpression() && ref1.container.length === 1) {
-    key = up1.key
-    up1 = up1.parentPath
+    key = up1.key;
+    up1 = up1.parentPath;
   }
   if (!up1.isVariableDeclarator() || key !== 'init') {
-    scope.crawl()
-    return
+    scope.crawl();
+    return;
   }
   // Move the definition to its reference
-  up1.node.init = path.node.init
+  up1.node.init = path.node.init;
   // Delete the original definition
   if (violation?.isAssignmentExpression()) {
-    path.node.init = undefined
+    path.node.init = undefined;
   } else {
-    path.remove()
+    path.remove();
   }
-  binding.scope.crawl()
+  binding.scope.crawl();
 }
 
 /**
@@ -203,6 +203,6 @@ function mergeObject(path) {
  * - Constant objects in the original code can be splitted
  * - AssignmentExpression can be moved to ReturnStatement
  */
-export default {
+module.exports = {
   VariableDeclarator: mergeObject,
-}
+};
