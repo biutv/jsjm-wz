@@ -1,12 +1,12 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import serverless from 'serverless-http';
-import PluginCommon from './plugin/common.js';
-import PluginJjencode from './plugin/jjencode.js';
-import PluginSojson from './plugin/sojson.js';
-import PluginSojsonV7 from './plugin/sojsonv7.js';
-import PluginObfuscator from './plugin/obfuscator.js';
-import PluginAwsc from './plugin/awsc.js';
+const express = require('express');
+const bodyParser = require('body-parser');
+const serverless = require('serverless-http');
+const PluginCommon = require('./plugin/common.js');
+const PluginJjencode = require('./plugin/jjencode.js');
+const PluginSojson = require('./plugin/sojson.js');
+const PluginSojsonV7 = require('./plugin/sojsonv7.js');
+const PluginObfuscator = require('./plugin/obfuscator.js');
+const PluginAwsc = require('./plugin/awsc.js');
 
 const app = express();
 const decodeRouter = express.Router();
@@ -70,5 +70,5 @@ app.use((req, res) => {
     res.status(404).json({ code: 0, msg: "Not Found" });
 });
 
-// 导出 Vercel 需要的 handler（移除 app.listen）
-export const handler = serverless(app);
+// 导出 Vercel 需要的 handler
+module.exports.handler = serverless(app);
