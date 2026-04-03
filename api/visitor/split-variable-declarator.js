@@ -1,21 +1,21 @@
-import * as t from '@babel/types'
+const t = require('@babel/types');
 
 function splitVariableDeclarator(path) {
-  const parent = path.parentPath
+  const parent = path.parentPath;
   // The container must be an array
   if (!parent.listKey) {
-    return
+    return;
   }
   if (!path.get('init').isSequenceExpression()) {
-    return
+    return;
   }
-  const exps = path.node.init.expressions
-  const last = exps.pop()
+  const exps = path.node.init.expressions;
+  const last = exps.pop();
   for (let exp of exps) {
-    parent.insertBefore(t.expressionStatement(exp))
+    parent.insertBefore(t.expressionStatement(exp));
   }
-  path.get('init').replaceWith(last)
-  parent.scope.crawl()
+  path.get('init').replaceWith(last);
+  parent.scope.crawl();
 }
 
 /**
@@ -29,6 +29,6 @@ function splitVariableDeclarator(path) {
  * var aa = b;
  * ```
  */
-export default {
+module.exports = {
   VariableDeclarator: splitVariableDeclarator,
-}
+};
