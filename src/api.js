@@ -1,5 +1,6 @@
 import express from 'express';
 import bodyParser from 'body-parser';
+import serverless from 'serverless-http';
 import PluginCommon from './plugin/common.js';
 import PluginJjencode from './plugin/jjencode.js';
 import PluginSojson from './plugin/sojson.js';
@@ -56,7 +57,7 @@ function processDecodeRequest(req, res, Plugin) {
 
 app.use('/decode', decodeRouter);
 
-// Railway 健康检查
+// 健康检查
 app.get('/', (req, res) => {
     res.json({ 
         status: 'ok', 
@@ -69,8 +70,5 @@ app.use((req, res) => {
     res.status(404).json({ code: 0, msg: "Not Found" });
 });
 
-// Railway 用环境变量 PORT
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is listening on port ${PORT}`);
-});
+// 导出 Vercel 需要的 handler（移除 app.listen）
+export const handler = serverless(app);
