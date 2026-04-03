@@ -2,38 +2,41 @@
  * 整合自下面两个项目：
  * * cilame/v_jstools
  * * Cqxstevexw/decodeObfuscator
+ * Modified to use built-in vm module instead of isolated-vm
  */
-import { parse } from '@babel/parser'
-import _generate from '@babel/generator'
-const generator = _generate.default
-import _traverse from '@babel/traverse'
-const traverse = _traverse.default
-import * as t from '@babel/types'
-import ivm from 'isolated-vm'
-import PluginEval from './eval.js'
-import calculateConstantExp from '../visitor/calculate-constant-exp.js'
-import deleteIllegalReturn from '../visitor/delete-illegal-return.js'
-import deleteUnusedVar from '../visitor/delete-unused-var.js'
-import lintIfStatement from '../visitor/lint-if-statement.js'
-import mergeObject from '../visitor/merge-object.js'
-import parseControlFlowStorage from '../visitor/parse-control-flow-storage.js'
-import pruneIfBranch from '../visitor/prune-if-branch.js'
-import removeControlFlowOb from '../visitor/remove-control-flow-ob.js'
-import splitAssignment from '../visitor/split-assignment.js'
-import splitSequence from '../visitor/split-sequence.js'
-import splitVarDeclaration from '../visitor/split-variable-declaration.js'
+const { parse } = require('@babel/parser');
+const _generate = require('@babel/generator');
+const generator = _generate.default;
+const _traverse = require('@babel/traverse');
+const traverse = _traverse.default;
+const t = require('@babel/types');
+const vm = require('vm');
+const PluginEval = require('./eval.js');
+const calculateConstantExp = require('../visitor/calculate-constant-exp.js');
+const deleteIllegalReturn = require('../visitor/delete-illegal-return.js');
+const deleteUnusedVar = require('../visitor/delete-unused-var.js');
+const lintIfStatement = require('../visitor/lint-if-statement.js');
+const mergeObject = require('../visitor/merge-object.js');
+const parseControlFlowStorage = require('../visitor/parse-control-flow-storage.js');
+const pruneIfBranch = require('../visitor/prune-if-branch.js');
+const removeControlFlowOb = require('../visitor/remove-control-flow-ob.js');
+const splitAssignment = require('../visitor/split-assignment.js');
+const splitSequence = require('../visitor/split-sequence.js');
+const splitVarDeclaration = require('../visitor/split-variable-declaration.js');
 
-const isolate = new ivm.Isolate()
-const globalContext = isolate.createContextSync()
+// 创建持久的沙箱上下文（用于 virtualGlobalEval）
+const sandbox = { console, setTimeout, setInterval, clearTimeout, clearInterval };
+vm.createContext(sandbox);
+
 function virtualGlobalEval(jsStr) {
-  return globalContext.evalSync(String(jsStr))
+  return vm.runInContext(jsStr, sandbox);
 }
 
 const optGenMin = {
   comments: false,
   minified: true,
   jsescOption: { minimal: true },
-}
+};
 
 /**
  * Extract the literal value of an object, and remove an object if all
@@ -41,59 +44,59 @@ const optGenMin = {
  */
 function decodeObject(ast) {
   function collectObject(path) {
-    const id = path.node.id
-    const init = path.node.init
+    const id = path.node.id;
+    const init = path.node.init;
     if (!t.isIdentifier(id) || !t.isObjectExpression(init)) {
-      return
+      return;
     }
-    const obj_name = id.name
-    const bind = path.scope.getBinding(obj_name)
-    let valid = true
-    let count = 0
-    let obj = {}
+    const obj_name = id.name;
+    const bind = path.scope.getBinding(obj_name);
+    let valid = true;
+    let count = 0;
+    let obj = {};
     for (const item of init.properties) {
       if (!t.isObjectProperty(item) || !t.isLiteral(item.value)) {
-        valid = false
-        break
+        valid = false;
+        break;
       }
       if (!t.isIdentifier(item.key)) {
-        valid = false
-        break
+        valid = false;
+        break;
       }
-      ++count
-      obj[item.key.name] = item.value
+      ++count;
+      obj[item.key.name] = item.value;
     }
     if (!valid || !count) {
-      return
+      return;
     }
-    let safe = true
+    let safe = true;
     for (let ref of bind.referencePaths) {
-      const parent = ref.parentPath
+      const parent = ref.parentPath;
       if (ref.key !== 'object' || !parent.isMemberExpression()) {
-        safe = false
-        continue
+        safe = false;
+        continue;
       }
-      const key = parent.node.property
+      const key = parent.node.property;
       if (!t.isIdentifier(key) || parent.node.computed) {
-        safe = false
-        continue
+        safe = false;
+        continue;
       }
       if (Object.prototype.hasOwnProperty.call(obj, key.name)) {
-        parent.replaceWith(obj[key.name])
+        parent.replaceWith(obj[key.name]);
       } else {
-        safe = false
+        safe = false;
       }
     }
-    bind.scope.crawl()
+    bind.scope.crawl();
     if (safe) {
-      path.remove()
-      console.log(`删除对象: ${obj_name}`)
+      path.remove();
+      console.log(`删除对象: ${obj_name}`);
     }
   }
   traverse(ast, {
     VariableDeclarator: collectObject,
-  })
-  return ast
+  });
+  return ast;
 }
 
 /**
@@ -104,100 +107,100 @@ function decodeObject(ast) {
  * @returns Object
  */
 function stringArrayV0(ast) {
-  console.info('Try v0 mode...')
+  console.info('Try v0 mode...');
   function check_wrapper(ref, array_name) {
-    ref = ref.parentPath
-    const index = ref.node.property?.name
+    ref = ref.parentPath;
+    const index = ref.node.property?.name;
     if (ref.key !== 'init') {
-      return null
+      return null;
     }
-    ref = ref.parentPath
-    const value = ref.node.id?.name
-    ref = ref.getFunctionParent()
+    ref = ref.parentPath;
+    const value = ref.node.id?.name;
+    ref = ref.getFunctionParent();
     if (!index || ref.node.params?.[0]?.name !== index) {
-      return null
+      return null;
     }
-    const container = ref.node.body.body
-    const ret_node = container[container.length - 1]
+    const container = ref.node.body.body;
+    const ret_node = container[container.length - 1];
     if (!t.isReturnStatement(ret_node) || ret_node.argument?.name !== value) {
-      return null
+      return null;
     }
     if (ref.key !== 'init') {
-      return null
+      return null;
     }
-    const rm_path = ref.parentPath
+    const rm_path = ref.parentPath;
     if (array_name == rm_path.node.id.name) {
-      return null
+      return null;
     }
-    return rm_path
+    return rm_path;
   }
   // check if all the binding references are wrapper
   function check_other_function(path, array_name) {
-    const binding = path.scope.getBinding(array_name)
+    const binding = path.scope.getBinding(array_name);
     if (!binding.referencePaths) {
-      return
+      return;
     }
-    const ob_func_str = []
-    const ob_dec_call = []
+    const ob_func_str = [];
+    const ob_dec_call = [];
     for (const ref of binding.referencePaths) {
       if (ref.findParent((path) => path.removed)) {
-        continue
+        continue;
       }
       if (ref.parentPath.isMemberExpression() && ref.key === 'object') {
-        const rm_path = check_wrapper(ref, array_name)
+        const rm_path = check_wrapper(ref, array_name);
         if (!rm_path) {
-          console.error('Unexpected reference')
-          return null
+          console.error('Unexpected reference');
+          return null;
         }
-        const code = generator(rm_path.node, optGenMin).code
-        rm_path.get('body').replaceWith(t.blockStatement([]))
-        ob_func_str.push(code)
-        ob_dec_call.push({ name: rm_path.node.id.name, path: rm_path })
+        const code = generator(rm_path.node, optGenMin).code;
+        rm_path.get('body').replaceWith(t.blockStatement([]));
+        ob_func_str.push(code);
+        ob_dec_call.push({ name: rm_path.node.id.name, path: rm_path });
       } else {
-        console.error('Unexpected reference')
-        return null
+        console.error('Unexpected reference');
+        return null;
       }
     }
     if (!ob_func_str.length) {
-      return null
+      return null;
     }
-    ob_func_str.push(generator(path.node, optGenMin).code)
-    path.remove()
+    ob_func_str.push(generator(path.node, optGenMin).code);
+    path.remove();
     return {
       version: 0,
       stringArrayName: array_name,
       stringArrayCodes: ob_func_str,
       stringArrayCalls: ob_dec_call,
-    }
+    };
   }
   let ret_obj = {
     version: 0,
     stringArrayName: null,
     stringArrayCodes: [],
     stringArrayCalls: [],
-  }
+  };
   function check_string_array(path) {
     if (path.getFunctionParent()) {
-      return
+      return;
     }
-    const init = path.get('init')
+    const init = path.get('init');
     if (!init.isArrayExpression()) {
-      return
+      return;
     }
     if (!init.node.elements.length) {
-      return
+      return;
     }
-    const array_name = path.node.id.name
-    const obj = check_other_function(path, array_name)
+    const array_name = path.node.id.name;
+    const obj = check_other_function(path, array_name);
     if (obj) {
-      ret_obj = obj
-      path.stop()
+      ret_obj = obj;
+      path.stop();
     }
   }
   traverse(ast, {
     VariableDeclarator: check_string_array,
-  })
-  return ret_obj
+  });
+  return ret_obj;
 }
 
 /**
@@ -208,17 +211,17 @@ function stringArrayV0(ast) {
  * @returns Object
  */
 function stringArrayV2(ast) {
-  console.info('Try v2 mode...')
+  console.info('Try v2 mode...');
   let obj = {
     version: 2,
     stringArrayName: null,
     stringArrayCodes: [],
     stringArrayCalls: [],
-  }
+  };
   // Function to rotate string list ("func2")
   function find_rotate_function(path) {
-    const callee = path.get('callee')
-    const args = path.node.arguments
+    const callee = path.get('callee');
+    const args = path.node.arguments;
     if (
       !callee.isFunctionExpression() ||
       callee.node.params.length !== 2 ||
@@ -226,84 +229,84 @@ function stringArrayV2(ast) {
       args.length > 2 ||
       !t.isIdentifier(args[0])
     ) {
-      return
+      return;
     }
-    const arr = callee.node.params[0].name
-    const cmpV = callee.node.params[1].name
+    const arr = callee.node.params[0].name;
+    const cmpV = callee.node.params[1].name;
     // >= 2.10.0
-    const fp1 = `(){try{if()break${arr}push(${arr}shift())}catch(){${arr}push(${arr}shift())}}`
+    const fp1 = `(){try{if()break${arr}push(${arr}shift())}catch(){${arr}push(${arr}shift())}}`;
     // < 2.10.0
-    const fp2 = `=function(){while(--){${arr}push(${arr}shift)}}${cmpV}`
-    const code = '' + callee.get('body')
+    const fp2 = `=function(){while(--){${arr}push(${arr}shift)}}${cmpV}`;
+    const code = '' + callee.get('body');
     if (!checkPattern(code, fp1) && !checkPattern(code, fp2)) {
-      return
+      return;
     }
-    obj.stringArrayName = args[0].name
+    obj.stringArrayName = args[0].name;
     // The string array can be found by its binding
-    const bind = path.scope.getBinding(obj.stringArrayName)
-    const def = t.variableDeclaration('var', [bind.path.node])
-    obj.stringArrayCodes.push(generator(def, optGenMin).code)
+    const bind = path.scope.getBinding(obj.stringArrayName);
+    const def = t.variableDeclaration('var', [bind.path.node]);
+    obj.stringArrayCodes.push(generator(def, optGenMin).code);
     // The calls can be found by its references
     for (let ref of bind.referencePaths) {
       if (ref?.listKey === 'arguments') {
         // This is the rotate function
-        continue
+        continue;
       }
       if (ref.findParent((path) => path.removed)) {
-        continue
+        continue;
       }
       // the key is 'object'
-      let up1 = ref.getFunctionParent()
+      let up1 = ref.getFunctionParent();
       if (up1.node.id) {
         // 2.12.0 <= v < 2.15.4
         // The `stringArrayCallsWrapperName` is included in the definition
-        obj.stringArrayCodes.push(generator(up1.node, optGenMin).code)
-        up1.node.body = t.blockStatement([])
-        obj.stringArrayCalls.push({ name: up1.node.id.name, path: up1 })
-        continue
+        obj.stringArrayCodes.push(generator(up1.node, optGenMin).code);
+        up1.node.body = t.blockStatement([]);
+        obj.stringArrayCalls.push({ name: up1.node.id.name, path: up1 });
+        continue;
       }
       if (up1.key === 'init') {
         // v < 2.12.0
         // The `stringArrayCallsWrapperName` is defined by VariableDeclarator
-        up1 = up1.parentPath
-        const node = t.variableDeclaration('var', [up1.node])
-        obj.stringArrayCodes.push(generator(node, optGenMin).code)
-        up1.node.init = null
-        obj.stringArrayCalls.push({ name: up1.node.id.name, path: up1 })
-        continue
+        up1 = up1.parentPath;
+        const node = t.variableDeclaration('var', [up1.node]);
+        obj.stringArrayCodes.push(generator(node, optGenMin).code);
+        up1.node.init = null;
+        obj.stringArrayCalls.push({ name: up1.node.id.name, path: up1 });
+        continue;
       }
       // 2.15.4 <= v < 2.19.0
       // The function includes another function with the same name
-      up1 = up1.parentPath
-      const wrapper = up1.node.left.name
-      let up2 = up1.getFunctionParent()
+      up1 = up1.parentPath;
+      const wrapper = up1.node.left.name;
+      let up2 = up1.getFunctionParent();
       if (!up2 || up2.node?.id?.name !== wrapper) {
-        console.warn('Unexpected reference!')
-        continue
+        console.warn('Unexpected reference!');
+        continue;
       }
-      obj.stringArrayCodes.push(generator(up2.node, optGenMin).code)
-      up1.remove()
-      up2.node.body = t.blockStatement([])
-      obj.stringArrayCalls.push({ name: wrapper, path: up2 })
+      obj.stringArrayCodes.push(generator(up2.node, optGenMin).code);
+      up1.remove();
+      up2.node.body = t.blockStatement([]);
+      obj.stringArrayCalls.push({ name: wrapper, path: up2 });
     }
     // Remove the string array
-    bind.path.remove()
+    bind.path.remove();
     // Add the rotate function
-    const node = t.expressionStatement(path.node)
-    obj.stringArrayCodes.push(generator(node, optGenMin).code)
-    path.stop()
+    const node = t.expressionStatement(path.node);
+    obj.stringArrayCodes.push(generator(node, optGenMin).code);
+    path.stop();
     if (path.parentPath.isUnaryExpression()) {
-      path.parentPath.remove()
+      path.parentPath.remove();
     } else {
-      path.remove()
+      path.remove();
     }
   }
-  traverse(ast, { CallExpression: find_rotate_function })
+  traverse(ast, { CallExpression: find_rotate_function });
   if (obj.stringArrayCodes.length < 3 || !obj.stringArrayCalls.length) {
-    console.error('Essential code missing!')
-    obj.stringArrayName = null
+    console.error('Essential code missing!');
+    obj.stringArrayName = null;
   }
-  return obj
+  return obj;
 }
 
 /**
@@ -314,10 +317,10 @@ function stringArrayV2(ast) {
  * @returns Object
  */
 function stringArrayV3(ast) {
-  console.info('Try v3 mode...')
-  let ob_func_str = []
-  let ob_dec_name = []
-  let ob_string_func_name = null
+  console.info('Try v3 mode...');
+  let ob_func_str = [];
+  let ob_dec_name = [];
+  let ob_string_func_name = null;
   // Normally, the string array func ("func1") follows the template below:
   // function aaa() {
   //   const bbb = [...]
@@ -331,45 +334,45 @@ function stringArrayV3(ast) {
   // references and put the child encode function into list.
   function find_string_array_function(path) {
     if (path.getFunctionParent()) {
-      return
+      return;
     }
     if (
       !t.isIdentifier(path.node.id) ||
       path.node.params.length ||
       !t.isBlockStatement(path.node.body)
     ) {
-      return
+      return;
     }
-    const body = path.node.body.body
+    const body = path.node.body.body;
     if (body.length < 2 || body.length > 3) {
-      return
+      return;
     }
-    const name_func = path.node.id.name
-    let string_var
+    const name_func = path.node.id.name;
+    let string_var;
     try {
       if (
         body[0].declarations.length != 1 ||
         !(string_var = body[0].declarations[0].id.name) ||
         !t.isArrayExpression(body[0].declarations[0].init)
       ) {
-        return
+        return;
       }
-      const nodes = [...body]
-      nodes.shift()
-      const code = generator(t.BlockStatement(nodes), optGenMin).code
-      const fp = `${name_func}=function(){return${string_var}}${name_func}()`
+      const nodes = [...body];
+      nodes.shift();
+      const code = generator(t.BlockStatement(nodes), optGenMin).code;
+      const fp = `${name_func}=function(){return${string_var}}${name_func}()`;
       if (!checkPattern(code, fp)) {
-        return
+        return;
       }
     } catch {
-      return
+      return;
     }
-    const binding = path.scope.getBinding(name_func)
+    const binding = path.scope.getBinding(name_func);
     if (!binding.referencePaths) {
-      return
+      return;
     }
-    let paths = binding.referencePaths
-    let nodes = []
+    let paths = binding.referencePaths;
+    let nodes = [];
     // The sorting function maybe missing in some config
     function find2(refer_path) {
       if (
@@ -377,164 +380,164 @@ function stringArrayV3(ast) {
         refer_path.listKey === 'arguments' &&
         refer_path.key === 0
       ) {
-        let rm_path = refer_path.parentPath
+        let rm_path = refer_path.parentPath;
         if (rm_path.parentPath.isExpressionStatement()) {
-          rm_path = rm_path.parentPath
+          rm_path = rm_path.parentPath;
         }
-        nodes.push([rm_path.node, 'func2'])
-        rm_path.remove()
+        nodes.push([rm_path.node, 'func2']);
+        rm_path.remove();
       }
     }
-    paths.map(find2)
+    paths.map(find2);
     function find3(refer_path) {
       if (refer_path.findParent((path) => path.removed)) {
-        return
+        return;
       }
       if (
         refer_path.parentPath.isCallExpression() &&
         refer_path.key === 'callee'
       ) {
-        let rm_path = refer_path.parentPath.getFunctionParent()
+        let rm_path = refer_path.parentPath.getFunctionParent();
         if (name_func == rm_path.node.id.name) {
-          return
+          return;
         }
-        const code = generator(rm_path.node, optGenMin).code
-        rm_path.node.body = t.blockStatement([])
-        nodes.push([code, 'func3', rm_path])
+        const code = generator(rm_path.node, optGenMin).code;
+        rm_path.node.body = t.blockStatement([]);
+        nodes.push([code, 'func3', rm_path]);
       } else {
-        console.error('Unexpected reference')
+        console.error('Unexpected reference');
       }
     }
-    paths.map(find3)
+    paths.map(find3);
     if (!name_func) {
-      return
+      return;
     }
-    ob_string_func_name = name_func
-    ob_func_str.push(generator(path.node, optGenMin).code)
+    ob_string_func_name = name_func;
+    ob_func_str.push(generator(path.node, optGenMin).code);
     nodes.map(function (item) {
       if (item[1] == 'func3') {
-        ob_func_str.push(item[0])
-        ob_dec_name.push({ name: item[2].node.id.name, path: item[2] })
-        return
+        ob_func_str.push(item[0]);
+        ob_dec_name.push({ name: item[2].node.id.name, path: item[2] });
+        return;
       }
-      let node = item[0]
+      let node = item[0];
       if (t.isCallExpression(node)) {
-        node = t.expressionStatement(node)
+        node = t.expressionStatement(node);
       }
-      ob_func_str.push(generator(node, optGenMin).code)
-    })
-    path.stop()
-    path.remove()
+      ob_func_str.push(generator(node, optGenMin).code);
+    });
+    path.stop();
+    path.remove();
   }
-  traverse(ast, { FunctionDeclaration: find_string_array_function })
+  traverse(ast, { FunctionDeclaration: find_string_array_function });
   return {
     version: 3,
     stringArrayName: ob_string_func_name,
     stringArrayCodes: ob_func_str,
     stringArrayCalls: ob_dec_name,
-  }
+  };
 }
 
 function decodeGlobal(ast) {
-  let obj = stringArrayV3(ast)
+  let obj = stringArrayV3(ast);
   if (!obj.stringArrayName) {
-    obj = stringArrayV2(ast)
+    obj = stringArrayV2(ast);
   }
   if (!obj.stringArrayName) {
-    obj = stringArrayV0(ast)
+    obj = stringArrayV0(ast);
   }
   if (!obj.stringArrayName) {
-    console.error('Cannot find string list!')
-    return false
+    console.error('Cannot find string list!');
+    return false;
   }
-  console.log(`String List Name: ${obj.stringArrayName}`)
-  let ob_func_str = obj.stringArrayCodes
-  let ob_dec_call = obj.stringArrayCalls
+  console.log(`String List Name: ${obj.stringArrayName}`);
+  let ob_func_str = obj.stringArrayCodes;
+  let ob_dec_call = obj.stringArrayCalls;
   try {
-    virtualGlobalEval(ob_func_str.join(';'))
+    virtualGlobalEval(ob_func_str.join(';'));
   } catch (e) {
     // issue #31
     if (e.name === 'ReferenceError') {
-      let lost = e.message.split(' ')[0]
+      let lost = e.message.split(' ')[0];
       traverse(ast, {
         Program(path) {
-          let loc = path.scope.getBinding(lost).path
-          let obj = t.variableDeclaration(loc.parent.kind, [loc.node])
-          ob_func_str.unshift(generator(obj, optGenMin).code)
-          loc.node.init = null
-          ob_dec_call.push({ name: lost, path: loc })
-          path.stop()
+          let loc = path.scope.getBinding(lost).path;
+          let obj = t.variableDeclaration(loc.parent.kind, [loc.node]);
+          ob_func_str.unshift(generator(obj, optGenMin).code);
+          loc.node.init = null;
+          ob_dec_call.push({ name: lost, path: loc });
+          path.stop();
         },
-      })
-      virtualGlobalEval(ob_func_str.join(';'))
+      });
+      virtualGlobalEval(ob_func_str.join(';'));
     }
   }
 
   // 递归删除混淆函数
   function getChild(father) {
     if (father.key !== 'argument' || !father.parentPath.isReturnStatement()) {
-      console.error(`Unexpected chained call: ${father}`)
-      return null
+      console.error(`Unexpected chained call: ${father}`);
+      return null;
     }
-    const func = father.getFunctionParent()
-    let name = func.node.id?.name
-    let root
-    let code
+    const func = father.getFunctionParent();
+    let name = func.node.id?.name;
+    let root;
+    let code;
     if (name) {
       // FunctionDeclaration
       // function A (...) { return function B (...) }
-      root = func
-      code = generator(root.node, optGenMin).code
+      root = func;
+      code = generator(root.node, optGenMin).code;
     } else {
       // FunctionExpression
       // var A = function (...) { return function B (...) }
-      root = func.parentPath
-      code = generator(t.variableDeclaration('var', [root])).code
-      name = root.node.id.name
+      root = func.parentPath;
+      code = generator(t.variableDeclaration('var', [root])).code;
+      name = root.node.id.name;
     }
     return {
       name: name,
       path: root,
       code: code,
-    }
+    };
   }
   function dfs(stk, item) {
-    stk.push(item)
-    const cur_val = item.name
-    console.log(`Enter sub ${stk.length}:${cur_val}`)
-    let pfx = ''
+    stk.push(item);
+    const cur_val = item.name;
+    console.log(`Enter sub ${stk.length}:${cur_val}`);
+    let pfx = '';
     for (let parent of stk) {
-      pfx += parent.code + ';'
+      pfx += parent.code + ';';
     }
-    virtualGlobalEval(pfx)
-    let scope = item.path.scope
+    virtualGlobalEval(pfx);
+    let scope = item.path.scope;
     if (item.path.isFunctionDeclaration()) {
-      scope = item.path.parentPath.scope
+      scope = item.path.parentPath.scope;
     }
-    const binding = scope.getBinding(cur_val)
-    binding.scope.crawl()
-    const refs = binding.scope.bindings[cur_val].referencePaths
-    const refs_next = []
+    const binding = scope.getBinding(cur_val);
+    binding.scope.crawl();
+    const refs = binding.scope.bindings[cur_val].referencePaths;
+    const refs_next = [];
     // 有4种链式调用情况：
     // - VariableDeclarator和FunctionDeclaration为原版
     // - AssignmentExpression 出现于 #50
     // - FunctionExpression 出现于 #94
     for (let ref of refs) {
-      const parent = ref.parentPath
+      const parent = ref.parentPath;
       if (ref.key === 'callee') {
         // CallExpression
-        let old_call = parent + ''
+        let old_call = parent + '';
         try {
           // 运行成功则说明函数为直接调用并返回字符串
-          let new_str = virtualGlobalEval(old_call)
-          console.log(`map: ${old_call} -> ${new_str}`)
-          parent.replaceWith(t.StringLiteral(new_str))
+          let new_str = virtualGlobalEval(old_call);
+          console.log(`map: ${old_call} -> ${new_str}`);
+          parent.replaceWith(t.StringLiteral(new_str));
         } catch {
           // 运行失败则说明函数为其它混淆函数的子函数
-          console.log(`sub: ${old_call}`)
-          const ret = getChild(parent)
+          console.log(`sub: ${old_call}`);
+          const ret = getChild(parent);
           if (ret) {
-            refs_next.push(ret)
+            refs_next.push(ret);
           }
         }
       } else if (ref.key === 'init') {
@@ -543,7 +546,7 @@ function decodeGlobal(ast) {
           name: ref.parent.id.name,
           path: ref.parentPath,
           code: 'var ' + ref.parentPath,
-        })
+        });
       } else if (ref.key === 'right') {
         // AssignmentExpression
         // 这种情况尚不完善 可能会产生额外替换
@@ -551,49 +554,49 @@ function decodeGlobal(ast) {
           name: ref.parent.left.name,
           path: ref.parentPath,
           code: 'var ' + ref.parentPath,
-        })
+        });
       }
     }
     for (let ref of refs_next) {
-      dfs(stk, ref)
+      dfs(stk, ref);
     }
-    binding.scope.crawl()
-    console.log(`Exit sub ${stk.length}:${cur_val}`)
-    stk.pop()
+    binding.scope.crawl();
+    console.log(`Exit sub ${stk.length}:${cur_val}`);
+    stk.pop();
     if (!item.path.parentPath.isCallExpression()) {
-      item.path.remove()
-      binding.scope.crawl()
-      return
+      item.path.remove();
+      binding.scope.crawl();
+      return;
     }
     // 只会出现在AssignmentExpression情况下 需要再次运行
-    item.path.replaceWith(t.identifier(cur_val))
-    item.path = binding.path
-    binding.scope.crawl()
-    dfs(stk, item)
+    item.path.replaceWith(t.identifier(cur_val));
+    item.path = binding.path;
+    binding.scope.crawl();
+    dfs(stk, item);
   }
   for (let item of ob_dec_call) {
-    item.code = ''
-    dfs([], item)
+    item.code = '';
+    dfs([], item);
   }
-  return true
+  return true;
 }
 
 function stringArrayLite(ast) {
   const visitor = {
     VariableDeclarator(path) {
-      const name = path.node.id.name
+      const name = path.node.id.name;
       if (!path.get('init').isArrayExpression()) {
-        return
+        return;
       }
-      const elements = path.node.init.elements
+      const elements = path.node.init.elements;
       for (const element of elements) {
         if (!t.isLiteral(element)) {
-          return
+          return;
         }
       }
-      const bind = path.scope.getBinding(name)
+      const bind = path.scope.getBinding(name);
       if (!bind.constant) {
-        return
+        return;
       }
       for (const ref of bind.referencePaths) {
         if (
@@ -602,145 +605,145 @@ function stringArrayLite(ast) {
           ref.parentPath.key == 'left' ||
           !t.isNumericLiteral(ref.parent.property)
         ) {
-          return
+          return;
         }
       }
-      console.log(`Extract string array: ${name}`)
+      console.log(`Extract string array: ${name}`);
       for (const ref of bind.referencePaths) {
-        const i = ref.parent.property.value
-        ref.parentPath.replaceWith(elements[i])
+        const i = ref.parent.property.value;
+        ref.parentPath.replaceWith(elements[i]);
       }
-      bind.scope.crawl()
-      path.remove()
+      bind.scope.crawl();
+      path.remove();
     },
-  }
-  traverse(ast, visitor)
+  };
+  traverse(ast, visitor);
 }
 
 function decodeCodeBlock(ast) {
   // 合并字面量
-  traverse(ast, calculateConstantExp)
+  traverse(ast, calculateConstantExp);
   // 先合并分离的Object定义
-  traverse(ast, mergeObject)
+  traverse(ast, mergeObject);
   // 在变量定义完成后判断是否为代码块加密内容
-  traverse(ast, parseControlFlowStorage)
+  traverse(ast, parseControlFlowStorage);
   // 合并字面量(在解除区域混淆后会出现新的可合并分割)
-  traverse(ast, calculateConstantExp)
-  return ast
+  traverse(ast, calculateConstantExp);
+  return ast;
 }
 
 function cleanDeadCode(ast) {
-  traverse(ast, calculateConstantExp)
-  traverse(ast, pruneIfBranch)
-  traverse(ast, removeControlFlowOb)
-  return ast
+  traverse(ast, calculateConstantExp);
+  traverse(ast, pruneIfBranch);
+  traverse(ast, removeControlFlowOb);
+  return ast;
 }
 
 function standardLoop(path) {
-  const node = path.node
+  const node = path.node;
   if (!t.isBlockStatement(node.body)) {
-    node.body = t.BlockStatement([node.body])
+    node.body = t.BlockStatement([node.body]);
   }
 }
 
 function purifyCode(ast) {
   // 标准化if语句
-  traverse(ast, lintIfStatement)
-  traverse(ast, pruneIfBranch)
+  traverse(ast, lintIfStatement);
+  traverse(ast, pruneIfBranch);
   // 标准化for语句
-  traverse(ast, { ForStatement: standardLoop })
+  traverse(ast, { ForStatement: standardLoop });
   // 标准化while语句
-  traverse(ast, { WhileStatement: standardLoop })
+  traverse(ast, { WhileStatement: standardLoop });
   // 删除空语句
   traverse(ast, {
     EmptyStatement: (path) => {
-      path.remove()
+      path.remove();
     },
-  })
-  traverse(ast, splitAssignment)
+  });
+  traverse(ast, splitAssignment);
   // 删除未使用的变量
-  traverse(ast, deleteUnusedVar)
+  traverse(ast, deleteUnusedVar);
   // 替换索引器
   function FormatMember(path) {
-    let curNode = path.node
+    let curNode = path.node;
     if (!t.isStringLiteral(curNode.property)) {
-      return
+      return;
     }
     if (curNode.computed === undefined || !curNode.computed === true) {
-      return
+      return;
     }
     if (!/^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(curNode.property.value)) {
-      return
+      return;
     }
-    curNode.property = t.identifier(curNode.property.value)
-    curNode.computed = false
+    curNode.property = t.identifier(curNode.property.value);
+    curNode.computed = false;
   }
-  traverse(ast, { MemberExpression: FormatMember })
+  traverse(ast, { MemberExpression: FormatMember });
 
   // 替换类和对象的计算方法和计算属性
   // ["method"](){} -> "method"(){}
   function FormatComputed(path) {
-    let curNode = path.node
+    let curNode = path.node;
     if (!t.isStringLiteral(curNode.key)) {
-      return
+      return;
     }
-    curNode.computed = false
+    curNode.computed = false;
   }
   // "method"(){} -> method(){}
   function stringLiteralToIdentifier(path) {
-    let curNode = path.node
+    let curNode = path.node;
     if (!t.isStringLiteral(curNode.key) || curNode.computed === true) {
-      return
+      return;
     }
     if (!/^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(curNode.key.value)) {
-      return
+      return;
     }
-    curNode.key = t.identifier(curNode.key.value)
+    curNode.key = t.identifier(curNode.key.value);
   }
   traverse(ast, {
     'Method|Property': (path) => {
-      FormatComputed(path)
-      stringLiteralToIdentifier(path)
+      FormatComputed(path);
+      stringLiteralToIdentifier(path);
     },
-  })
+  });
 
   // 拆分语句
-  traverse(ast, splitSequence)
-  return ast
+  traverse(ast, splitSequence);
+  return ast;
 }
 
 function checkPattern(code, pattern) {
-  let i = 0
-  let j = 0
+  let i = 0;
+  let j = 0;
   while (i < code.length && j < pattern.length) {
     if (code[i] == pattern[j]) {
-      ++j
+      ++j;
     }
-    ++i
+    ++i;
   }
-  return j == pattern.length
+  return j == pattern.length;
 }
 
 const deleteSelfDefendingCode = {
   VariableDeclarator(path) {
-    const { id, init } = path.node
-    const selfName = id.name
+    const { id, init } = path.node;
+    const selfName = id.name;
     if (!t.isCallExpression(init)) {
-      return
+      return;
     }
     if (!t.isIdentifier(init.callee)) {
-      return
+      return;
     }
-    const callName = init.callee.name
-    const args = init.arguments
+    const callName = init.callee.name;
+    const args = init.arguments;
     if (
       args.length != 2 ||
       !t.isThisExpression(args[0]) ||
       !t.isFunctionExpression(args[1])
     ) {
-      return
+      return;
     }
-    const block = generator(args[1]).code
+    const block = generator(args[1]).code;
     const patterns = [
       // @7920538
       `return${selfName}.toString().search().toString().constructor(${selfName}).search()`,
@@ -748,37 +751,37 @@ const deleteSelfDefendingCode = {
       `const=function(){const=.constructor()return.test(${selfName})}return()`,
       // #94
       `var=function(){var=.constructor()return.test(${selfName})}return()`,
-    ]
-    let valid = false
+    ];
+    let valid = false;
     for (let pattern of patterns) {
-      valid |= checkPattern(block, pattern)
+      valid |= checkPattern(block, pattern);
     }
     if (!valid) {
-      return
+      return;
     }
-    const refs = path.scope.bindings[selfName].referencePaths
+    const refs = path.scope.bindings[selfName].referencePaths;
     for (let ref of refs) {
       if (ref.key == 'callee') {
-        ref.parentPath.remove()
-        break
+        ref.parentPath.remove();
+        break;
       }
     }
-    path.remove()
-    console.info(`Remove SelfDefendingFunc: ${selfName}`)
-    const scope = path.scope.getBinding(callName).scope
-    scope.crawl()
-    const bind = scope.bindings[callName]
+    path.remove();
+    console.info(`Remove SelfDefendingFunc: ${selfName}`);
+    const scope = path.scope.getBinding(callName).scope;
+    scope.crawl();
+    const bind = scope.bindings[callName];
     if (bind.referenced) {
-      console.error(`Call func ${callName} unexpected ref!`)
+      console.error(`Call func ${callName} unexpected ref!`);
     }
-    bind.path.remove()
-    console.info(`Remove CallFunc: ${callName}`)
+    bind.path.remove();
+    console.info(`Remove CallFunc: ${callName}`);
   },
-}
+};
 
 const deleteDebugProtectionCode = {
   FunctionDeclaration(path) {
-    const { id, params, body } = path.node
+    const { id, params, body } = path.node;
     if (
       !t.isIdentifier(id) ||
       params.length !== 1 ||
@@ -788,173 +791,175 @@ const deleteDebugProtectionCode = {
       !t.isFunctionDeclaration(body.body[0]) ||
       !t.isTryStatement(body.body[1])
     ) {
-      return
+      return;
     }
-    const debugName = id.name
-    const ret = params[0].name
-    const subNode = body.body[0]
+    const debugName = id.name;
+    const ret = params[0].name;
+    const subNode = body.body[0];
     if (
       !t.isIdentifier(subNode.id) ||
       subNode.params.length !== 1 ||
       !t.isIdentifier(subNode.params[0])
     ) {
-      return
+      return;
     }
-    const subName = subNode.id.name
-    const counter = subNode.params[0].name
-    const code = generator(body).code
-    const pattern = `function${subName}(${counter}){${counter}debugger${subName}(++${counter})}try{if(${ret})return${subName}${subName}(0)}catch(){}`
+    const subName = subNode.id.name;
+    const counter = subNode.params[0].name;
+    const code = generator(body).code;
+    const pattern = `function${subName}(${counter}){${counter}debugger${subName}(++${counter})}try{if(${ret})return${subName}${subName}(0)}catch(){}`;
     if (!checkPattern(code, pattern)) {
-      return
+      return;
     }
-    const scope1 = path.parentPath.scope
-    const refs = scope1.bindings[debugName].referencePaths
+    const scope1 = path.parentPath.scope;
+    const refs = scope1.bindings[debugName].referencePaths;
     for (let ref of refs) {
       if (ref.findParent((path) => path.removed)) {
-        continue
+        continue;
       }
       if (ref.key == 0) {
         // DebugProtectionFunctionInterval @e8e92c6
-        const rm = ref.getFunctionParent().parentPath
-        rm.remove()
-        continue
+        const rm = ref.getFunctionParent().parentPath;
+        rm.remove();
+        continue;
       }
       // ref.key == 'callee'
-      const up1 = ref.getFunctionParent()
-      const callName = up1.parent.callee.name
+      const up1 = ref.getFunctionParent();
+      const callName = up1.parent.callee.name;
       if (callName === 'setInterval') {
         // DebugProtectionFunctionInterval @51523c0
-        const rm = up1.parentPath
-        rm.remove()
-        continue
+        const rm = up1.parentPath;
+        rm.remove();
+        continue;
       }
-      const up2 = up1.getFunctionParent()?.parentPath
+      const up2 = up1.getFunctionParent()?.parentPath;
       if (up2) {
         // DebugProtectionFunctionCall
-        const scope2 = up2.scope.getBinding(callName).scope
-        up2.remove()
-        scope1.crawl()
-        scope2.crawl()
-        const bind = scope2.bindings[callName]
-        bind.path.remove()
-        console.info(`Remove CallFunc: ${callName}`)
-        continue
+        const scope2 = up2.scope.getBinding(callName).scope;
+        up2.remove();
+        scope1.crawl();
+        scope2.crawl();
+        const bind = scope2.bindings[callName];
+        bind.path.remove();
+        console.info(`Remove CallFunc: ${callName}`);
+        continue;
       }
       // exceptions #95
-      const rm = ref.parentPath
-      rm.remove()
+      const rm = ref.parentPath;
+      rm.remove();
     }
-    path.remove()
-    console.info(`Remove DebugProtectionFunc: ${debugName}`)
+    path.remove();
+    console.info(`Remove DebugProtectionFunc: ${debugName}`);
   },
-}
+};
 
 const deleteConsoleOutputCode = {
   VariableDeclarator(path) {
-    const { id, init } = path.node
-    const selfName = id.name
+    const { id, init } = path.node;
+    const selfName = id.name;
     if (!t.isCallExpression(init)) {
-      return
+      return;
     }
     if (!t.isIdentifier(init.callee)) {
-      return
+      return;
     }
-    const callName = init.callee.name
-    const args = init.arguments
+    const callName = init.callee.name;
+    const args = init.arguments;
     if (
       args.length != 2 ||
       !t.isThisExpression(args[0]) ||
       !t.isFunctionExpression(args[1])
     ) {
-      return
+      return;
     }
-    const block = generator(args[1]).code
-    const pattern = `console=console=log,warn,info,error,for(){${callName}constructor.prototype.bind${callName}${callName}bind${callName}}`
+    const block = generator(args[1]).code;
+    const pattern = `console=console=log,warn,info,error,for(){${callName}constructor.prototype.bind${callName}${callName}bind${callName}}`;
     if (!checkPattern(block, pattern)) {
-      return
+      return;
     }
-    const refs = path.scope.bindings[selfName].referencePaths
+    const refs = path.scope.bindings[selfName].referencePaths;
     for (let ref of refs) {
       if (ref.key == 'callee') {
-        ref.parentPath.remove()
-        break
+        ref.parentPath.remove();
+        break;
       }
     }
-    path.remove()
-    console.info(`Remove ConsoleOutputFunc: ${selfName}`)
-    const scope = path.scope.getBinding(callName).scope
-    scope.crawl()
-    const bind = scope.bindings[callName]
+    path.remove();
+    console.info(`Remove ConsoleOutputFunc: ${selfName}`);
+    const scope = path.scope.getBinding(callName).scope;
+    scope.crawl();
+    const bind = scope.bindings[callName];
     if (bind.referenced) {
-      console.error(`Call func ${callName} unexpected ref!`)
+      console.error(`Call func ${callName} unexpected ref!`);
     }
-    bind.path.remove()
-    console.info(`Remove CallFunc: ${callName}`)
+    bind.path.remove();
+    console.info(`Remove CallFunc: ${callName}`);
   },
-}
+};
 
 function unlockEnv(ast) {
   //可能会误删一些代码，可屏蔽
-  traverse(ast, deleteSelfDefendingCode)
-  traverse(ast, deleteDebugProtectionCode)
-  traverse(ast, deleteConsoleOutputCode)
-  return ast
+  traverse(ast, deleteSelfDefendingCode);
+  traverse(ast, deleteDebugProtectionCode);
+  traverse(ast, deleteConsoleOutputCode);
+  return ast;
 }
 
-export default function (code) {
-  let ret = PluginEval.unpack(code)
-  let global_eval = false
+function decodeObfuscator(code) {
+  let ret = PluginEval.unpack(code);
+  let global_eval = false;
   if (ret) {
-    global_eval = true
-    code = ret
+    global_eval = true;
+    code = ret;
   }
-  let ast
+  let ast;
   try {
-    ast = parse(code, { errorRecovery: true })
+    ast = parse(code, { errorRecovery: true });
   } catch (e) {
-    console.error(`Cannot parse code: ${e.reasonCode}`)
-    return null
+    console.error(`Cannot parse code: ${e.reasonCode}`);
+    return null;
   }
   // IllegalReturn
-  traverse(ast, deleteIllegalReturn)
+  traverse(ast, deleteIllegalReturn);
   // Lint before split statements
-  traverse(ast, lintIfStatement)
+  traverse(ast, lintIfStatement);
   // Split declarations to avoid bugs
-  traverse(ast, splitVarDeclaration)
+  traverse(ast, splitVarDeclaration);
   // 清理二进制显示内容
   traverse(ast, {
     StringLiteral: ({ node }) => {
-      delete node.extra
+      delete node.extra;
     },
     NumericLiteral: ({ node }) => {
-      delete node.extra
+      delete node.extra;
     },
-  })
-  console.log('还原数值...')
+  });
+  console.log('还原数值...');
   if (!decodeObject(ast)) {
-    return null
+    return null;
   }
-  console.log('处理全局加密...')
+  console.log('处理全局加密...');
   if (!decodeGlobal(ast)) {
-    return null
+    return null;
   }
-  console.log('提高代码可读性...')
-  ast = purifyCode(ast)
-  console.log('处理代码块加密...')
-  stringArrayLite(ast)
-  ast = decodeCodeBlock(ast)
-  console.log('清理死代码...')
-  ast = cleanDeadCode(ast)
+  console.log('提高代码可读性...');
+  ast = purifyCode(ast);
+  console.log('处理代码块加密...');
+  stringArrayLite(ast);
+  ast = decodeCodeBlock(ast);
+  console.log('清理死代码...');
+  ast = cleanDeadCode(ast);
   // 刷新代码
-  ast = parse(generator(ast, optGenMin).code, { errorRecovery: true })
-  console.log('提高代码可读性...')
-  ast = purifyCode(ast)
-  console.log('解除环境限制...')
-  ast = unlockEnv(ast)
-  console.log('净化完成')
-  code = generator(ast, { jsescOption: { minimal: true } }).code
+  ast = parse(generator(ast, optGenMin).code, { errorRecovery: true });
+  console.log('提高代码可读性...');
+  ast = purifyCode(ast);
+  console.log('解除环境限制...');
+  ast = unlockEnv(ast);
+  console.log('净化完成');
+  let decoded = generator(ast, { jsescOption: { minimal: true } }).code;
   if (global_eval) {
-    code = PluginEval.pack(code)
+    decoded = PluginEval.pack(decoded);
   }
-  return code
+  return decoded;
 }
+
+module.exports = decodeObfuscator;
