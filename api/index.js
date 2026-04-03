@@ -1,54 +1,68 @@
-const { parse } = require('@babel/parser');
-const _generate = require('@babel/generator');
-const generator = _generate.default;
-const _traverse = require('@babel/traverse');
-const traverse = _traverse.default;
-const t = require('@babel/types');
+const express = require('express');
+const bodyParser = require('body-parser');
+const serverless = require('serverless-http');
 
-function unpack(code) {
-  let ast = parse(code, { errorRecovery: true });
-  let lines = ast.program.body;
-  let data = null;
-  for (let line of lines) {
-    if (t.isEmptyStatement(line)) {
-      continue;
-    }
-    if (data) {
-      return null;
-    }
-    if (
-      t.isCallExpression(line?.expression) &&
-      line.expression.callee?.name === 'eval' &&
-      line.expression.arguments.length === 1 &&
-      t.isCallExpression(line.expression.arguments[0])
-    ) {
-      data = t.expressionStatement(line.expression.arguments[0]);
-      continue;
-    }
+// 已确认可用的插件
+const PluginCommon = require('./plugin/common.js');
+const PluginJjencode = require('./plugin/jjencode.js');
+const PluginSojson = require('./plugin/sojson.js');      // 已修改
+const PluginSojsonV7 = require('./plugin/sojsonv7.js');  // 已修改
+const PluginObfuscator = require('./plugin/obfuscator.js'); // 已修改
+
+// 临时禁用 awsc（如果尚未修改）
+// const PluginAwsc = require('./plugin/awsc.js');
+const PluginAwsc = (code) => {
+    console.error('awsc 解码暂不可用（模块未转换）');
     return null;
-  }
-  if (!data) {
-    return null;
-  }
-  code = generator(data, { minified: true }).code;
-  return eval(code);
-}
-
-function pack(code) {
-  let ast1 = parse('(function(){}())');
-  let ast2 = parse(code);
-  traverse(ast1, {
-    FunctionExpression(path) {
-      let body = t.blockStatement(ast2.program.body);
-      path.replaceWith(t.functionExpression(null, [], body));
-      path.stop();
-    },
-  });
-  code = generator(ast1, { minified: false }).code;
-  return code;
-}
-
-module.exports = {
-  unpack,
-  pack,
 };
+
+const app = express();
+const decodeRouter = express.Router();
+
+app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+app.use(bodyParser.json({ limit: '10mb' }));
+
+decodeRouter.post('/v7', (req, res) => processDecodeRequest(req, res, PluginSojsonV7));
+decodeRouter.post('/sojson', (req, res) => processDecodeRequest(req, res, PluginSojson));
+decodeRouter.post('/common', (req, res) => processDecodeRequest(req, res, PluginCommon));
+decodeRouter.post('/jj', (req, res) => processDecodeRequest(req, res, PluginJjencode));
+decodeRouter.post('/Obfuscator', (req, res) => processDecodeRequest(req, res, PluginObfuscator));
+decodeRouter.post('/awsc', (req, res) => processDecodeRequest(req, res, PluginAwsc));
+
+function processDecodeRequest(req, res, Plugin) {
+    try {
+        const contentType = req.headers['content-type'];
+        let sourceCode;
+        if (contentType?.startsWith('application/json') || 
+            contentType?.startsWith('application/x-www-form-urlencoded')) {
+            sourceCode = req.body.code;
+        } else {
+            throw new Error("参数错误");
+        }
+        console.log('request come', sourceCode?.substring(0, 100) + '...');
+        const decodedCode = Plugin(sourceCode);
+        if (!decodedCode) {
+            throw new Error("解码失败");
+        }
+        res.status(200).json({ code: 1, msg: "success", data: decodedCode });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ code: 0, msg: e.message });
+    }
+}
+
+app.use('/decode', decodeRouter);
+
+app.get('/', (req, res) => {
+    res.json({
+        status: 'ok',
+        service: 'js-decoder',
+        endpoints: ['/decode/common', '/decode/jj', '/decode/sojson', '/decode/v7', '/decode/Obfuscator', '/decode/awsc']
+    });
+});
+
+app.use((req, res) => {
+    res.status(404).json({ code: 0, msg: "Not Found" });
+});
+
+module.exports.handler = serverless(app);
