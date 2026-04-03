@@ -1,6 +1,5 @@
 {
   "name": "decode-js",
-  "type": "module",
   "scripts": {
     "start": "node src/api.js",
     "decode": "node src/main.js"
